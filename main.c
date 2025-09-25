@@ -107,16 +107,16 @@ int main(void)
 
 	HAL_Delay(1000);
 
-  Emm_V5_Pos_Control(1, 0, 100, 10, 3200, 0, 0);
+  Emm_V5_Pos_Control(1, 0, 100, 10, 3200, 0, 1);
   HAL_Delay(100);
 
-  // Emm_V5_Vel_Control(2,0,100,10,1);
-  // HAL_Delay(100);
+  Emm_V5_Pos_Control(2, 0, 100, 10, 3200, 0, 1);
+  HAL_Delay(100);
 
-  // Emm_V5_Synchronous_motion(3);
-  // HAL_Delay(100);
+  Emm_V5_Synchronous_motion(0);
+  HAL_Delay(10);
 
-	while(rxFrameFlag == false); rxFrameFlag = false;
+	while(rxCmd[1] != 0xFD || rxCmd[2] != 0x9F); rxFrameFlag = false;
 
   /* USER CODE END 2 */
 

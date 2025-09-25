@@ -208,7 +208,20 @@ void SysTick_Handler(void)
 void USART1_IRQHandler(void)
 {
   /* USER CODE BEGIN USART1_IRQn 0 */
+  
+  if(__HAL_UART_GET_FLAG(&huart1, UART_FLAG_IDLE) != RESET)
+	{
+		__HAL_UART_CLEAR_IDLEFLAG(&huart1); // 清除IDLE标志
 
+		HAL_UART_DMAStop(&huart1); // 停止DMA，为了重新设置DMA发送多少数据
+
+		rxCount = CMD_LEN - __HAL_DMA_GET_COUNTER(&hdma_usart1_rx);
+		 
+		rxFrameFlag = true; // 置位一帧命令接收完毕标志位
+		
+		HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN);
+	}
+  
   /* USER CODE END USART1_IRQn 0 */
   HAL_UART_IRQHandler(&huart1);
   /* USER CODE BEGIN USART1_IRQn 1 */

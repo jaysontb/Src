@@ -120,8 +120,6 @@ void Emm_V5_En_Control(uint8_t addr, bool state, bool snF)
 {
   uint8_t cmd[16] = {0};
   
-  while (HAL_UART_GetState(&huart1) != HAL_UART_STATE_READY) { }
-  
   // 装载命令
   cmd[0] =  addr;                       // 地址
   cmd[1] =  0xF3;                       // 功能码
@@ -145,20 +143,20 @@ void Emm_V5_En_Control(uint8_t addr, bool state, bool snF)
   */
 void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bool snF)
 {
-  static uint8_t vel_cmd[16] = {0};
+  uint8_t cmd[16] = {0};
 
   // 装载命令
-  vel_cmd[0] =  addr;                       // 地址
-  vel_cmd[1] =  0xF6;                       // 功能码
-  vel_cmd[2] =  dir;                        // 方向
-  vel_cmd[3] =  (uint8_t)(vel >> 8);        // 速度(RPM)高8位字节
-  vel_cmd[4] =  (uint8_t)(vel >> 0);        // 速度(RPM)低8位字节
-  vel_cmd[5] =  acc;                        // 加速度，注意：0是直接启动
-  vel_cmd[6] =  snF;                        // 多机同步运动标志
-  vel_cmd[7] =  0x6B;                       // 校验字节
-
+  cmd[0] =  addr;                       // 地址
+  cmd[1] =  0xF6;                       // 功能码
+  cmd[2] =  dir;                        // 方向
+  cmd[3] =  (uint8_t)(vel >> 8);        // 速度(RPM)高8位字节
+  cmd[4] =  (uint8_t)(vel >> 0);        // 速度(RPM)低8位字节
+  cmd[5] =  acc;                        // 加速度，注意：0是直接启动
+  cmd[6] =  snF;                        // 多机同步运动标志
+  cmd[7] =  0x6B;                       // 校验字节
+  
   // 发送命令
-  HAL_UART_Transmit_DMA(&huart1, (uint8_t *)vel_cmd, 8);
+  HAL_UART_Transmit_DMA(&huart1, (uint8_t *)cmd, 8);
 }
 
 /**
@@ -174,7 +172,7 @@ void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bo
   */
 void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF)
 {
-   uint8_t cmd[16] = {0};
+  uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0]  =  addr;                      // 地址
@@ -223,16 +221,16 @@ void Emm_V5_Stop_Now(uint8_t addr, bool snF)
   */
 void Emm_V5_Synchronous_motion(uint8_t addr)
 {
-  uint8_t cmd1[16] = {0};
+  static uint8_t cmd[16] = {0};
   
   // 装载命令
-  cmd1[0] =  addr;                       // 地址
-  cmd1[1] =  0xFF;                       // 功能码
-  cmd1[2] =  0x66;                       // 辅助码
-  cmd1[3] =  0x6B;                       // 校验字节
-
+  cmd[0] =  addr;                       // 地址
+  cmd[1] =  0xFF;                       // 功能码
+  cmd[2] =  0x66;                       // 辅助码
+  cmd[3] =  0x6B;                       // 校验字节
+  
   // 发送命令
-  HAL_UART_Transmit_DMA(&huart1, (uint8_t *)cmd1, 4);
+  HAL_UART_Transmit_DMA(&huart1, (uint8_t *)cmd, 4);
 }
 
 /**
