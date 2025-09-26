@@ -33,6 +33,7 @@
 #include "inv_mpu.h"
 #include "servo.h"
 #include "oled.h"
+#include <stdio.h>
 
 /* USER CODE END Includes */
 
@@ -76,6 +77,10 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+  float pitch = 0.0f;
+  float roll = 0.0f;
+  float yaw = 0.0f;
+  uint8_t mpu_ready = 0U;
 
   /* USER CODE END 1 */
 
@@ -106,6 +111,19 @@ int main(void)
   OLED_Init();
   /* USER CODE BEGIN 2 */
 
+  mpu_ready = (mpu_dmp_init() == 0U);
+  if (mpu_ready)
+  {
+    OLED_ShowString(1, 1, "MPU DMP READY ");
+    OLED_ShowString(2, 1, "Pitch:");
+    OLED_ShowString(3, 1, "Roll :");
+    OLED_ShowString(4, 1, "Yaw  :");
+  }
+  else
+  {
+    OLED_ShowString(1, 1, "MPU DMP ERROR");
+  }
+
 	// __HAL_UART_CLEAR_IDLEFLAG(&huart1); 											
 	// __HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE); 							
   // HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN); 
@@ -123,8 +141,6 @@ int main(void)
 
 	// while(rxCmd[1] != 0xFD || rxCmd[2] != 0x9F); rxFrameFlag = false;
 
-  OLED_ShowNum(1,1,100,3);
-
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -134,6 +150,30 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    if (mpu_ready)
+    {
+      if (mpu_dmp_get_data(&pitch, &roll, &yaw) == 0U)
+      {
+        char value_buffer[12];
+
+        OLED_ShowString(1, 1, "MPU DMP READY ");
+
+        (void)snprintf(value_buffer, sizeof(value_buffer), "%7.2f", pitch);
+        OLED_ShowString(2, 7, value_buffer);
+
+        (void)snprintf(value_buffer, sizeof(value_buffer), "%7.2f", roll);
+        OLED_ShowString(3, 7, value_buffer);
+
+        (void)snprintf(value_buffer, sizeof(value_buffer), "%7.2f", yaw);
+        OLED_ShowString(4, 7, value_buffer);
+      }
+      else
+      {
+        OLED_ShowString(1, 1, "MPU DATA FAIL ");
+      }
+    }
+
+    HAL_Delay(50);
   }
   /* USER CODE END 3 */
 }

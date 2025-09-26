@@ -1,9 +1,9 @@
-#include "ZDT_X42_V2.h"
+#include "motor.h"
+#include "Emm_V5.h"
+#include "inv_mpu.h"
 #include <math.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include "motor.h"
-#include "inv_mpu.h"
 
 #define WHEEL_RADIUS_MM     48.0f     // 轮半径
 
@@ -17,9 +17,7 @@
 #define ACC_RPM_S  800
 #define DEC_RPM_S  800
 #define MAX_RPM    200
-
-static uint8_t rx_buffer[128];
-static uint8_t rx_count = 0;
+#define EMM_DEFAULT_ACC   50U
 
 // 累计角度（度，正数取绝对累加，方向单独用dir）
 //static float acc_deg_FL = 0, acc_deg_FR = 0, acc_deg_RL = 0, acc_deg_RR = 0;
@@ -36,27 +34,40 @@ static HeadingController_t heading_ctrl = {
 
 bool Motor_readangle(uint8_t motor_adr , float *angle)
 {
-    // 实时读取电机位置（在电机转动过程中）
-    ZDT_X42_V2_Read_Sys_Params(motor_adr, S_CPOS);
-    
-    // 等待短暂时间让数据传输
-    HAL_Delay(2);
-
-    // 等待返回数据
-    ZDT_X42_V2_Receive_Data(rx_buffer, &rx_count); 
-    
-    // 验证数据有效性并解析位置
-    if(rx_buffer[0] == motor_adr && rx_buffer[1] == 0x36 && rx_count == 8)
+    if (angle == NULL)
     {
-        // 获取电机实时角度返回值
-        *angle = ((uint32_t)rx_buffer[3] << 24) | ((uint32_t)rx_buffer[4] << 16) |
-              ((uint32_t)rx_buffer[5] << 8) | (uint32_t)rx_buffer[6];
-        
-        // 缩小10倍，并判断符号，得到真正的实时角度
-        *angle = *angle * 0.1f; 
-        if(rx_buffer[2]) { *angle = -(*angle); }
+        return false;
+    }
+
+    // 发送读取实时位置命令
+    Emm_V5_Read_Sys_Params(motor_adr, S_CPOS);
+
+    // 等待返回数据 (阻塞直到收到帧)
+    while (rxFrameFlag == false)
+    {
+        // 简单延时，避免空转
+        HAL_Delay(1);
+    }
+    rxFrameFlag = false;
+
+    // 校验地址、功能码和长度
+    if (rxCmd[0] == motor_adr && rxCmd[1] == 0x36 && rxCount == 8)
+    {
+        uint32_t pos;
+
+        pos = ((uint32_t)rxCmd[3] << 24) |
+              ((uint32_t)rxCmd[4] << 16) |
+              ((uint32_t)rxCmd[5] << 8)  |
+              ((uint32_t)rxCmd[6]);
+
+        *angle = (float)pos * 0.1f;
+        if (rxCmd[2] != 0U)
+        {
+            *angle = -*angle;
+        }
         return true;
     }
+
     return false;
 }
 
@@ -88,37 +99,44 @@ static bool Motor_ReadAllPositions(float positions[4])
 // 发送速度指令到所有电机
 static void Motor_SetAllVelocities(float wheel_speeds[4])
 {
-    // 限制速度范围
-    for(int i = 0; i < 4; i++)
-    {
-        if(wheel_speeds[i] > MAX_RPM) wheel_speeds[i] = MAX_RPM;
-        else if(wheel_speeds[i] < -MAX_RPM) wheel_speeds[i] = -MAX_RPM;
-    }
-    
-    // 计算方向和绝对速度
-    uint8_t directions[4];
-    float abs_speeds[4];
-    
-    for(int i = 0; i < 4; i++)
-    {
-        directions[i] = (wheel_speeds[i] >= 0) ? 0 : 1;
-        abs_speeds[i] = fabsf(wheel_speeds[i]);
-    }
-    
-    // 发送速度指令
-    ZDT_X42_V2_Velocity_Control(MOTOR_FL, directions[0], 1000, abs_speeds[0], 0);
-    ZDT_X42_V2_Velocity_Control(MOTOR_FR, directions[1], 1000, abs_speeds[1], 0);
-    ZDT_X42_V2_Velocity_Control(MOTOR_RL, directions[2], 1000, abs_speeds[2], 0);
-    ZDT_X42_V2_Velocity_Control(MOTOR_RR, directions[3], 1000, abs_speeds[3], 0);
+    float speed_fl = wheel_speeds[0];
+    float speed_fr = wheel_speeds[1];
+    float speed_rl = wheel_speeds[2];
+    float speed_rr = wheel_speeds[3];
+
+    // 限制范围
+    if (speed_fl > MAX_RPM) speed_fl = MAX_RPM;
+    if (speed_fl < -MAX_RPM) speed_fl = -MAX_RPM;
+    if (speed_fr > MAX_RPM) speed_fr = MAX_RPM;
+    if (speed_fr < -MAX_RPM) speed_fr = -MAX_RPM;
+    if (speed_rl > MAX_RPM) speed_rl = MAX_RPM;
+    if (speed_rl < -MAX_RPM) speed_rl = -MAX_RPM;
+    if (speed_rr > MAX_RPM) speed_rr = MAX_RPM;
+    if (speed_rr < -MAX_RPM) speed_rr = -MAX_RPM;
+
+    uint8_t dir_fl = (speed_fl >= 0.0f) ? 0 : 1;
+    uint8_t dir_fr = (speed_fr >= 0.0f) ? 0 : 1;
+    uint8_t dir_rl = (speed_rl >= 0.0f) ? 0 : 1;
+    uint8_t dir_rr = (speed_rr >= 0.0f) ? 0 : 1;
+
+    uint16_t rpm_fl = (uint16_t)(fabsf(speed_fl) + 0.5f);
+    uint16_t rpm_fr = (uint16_t)(fabsf(speed_fr) + 0.5f);
+    uint16_t rpm_rl = (uint16_t)(fabsf(speed_rl) + 0.5f);
+    uint16_t rpm_rr = (uint16_t)(fabsf(speed_rr) + 0.5f);
+
+    Emm_V5_Vel_Control(MOTOR_FL, dir_fl, rpm_fl, EMM_DEFAULT_ACC, false);
+    Emm_V5_Vel_Control(MOTOR_FR, dir_fr, rpm_fr, EMM_DEFAULT_ACC, false);
+    Emm_V5_Vel_Control(MOTOR_RL, dir_rl, rpm_rl, EMM_DEFAULT_ACC, false);
+    Emm_V5_Vel_Control(MOTOR_RR, dir_rr, rpm_rr, EMM_DEFAULT_ACC, false);
 }
 
 // 停止所有电机
 static void Motor_StopAll(void)
 {
-    ZDT_X42_V2_Stop_Now(MOTOR_FL, 0);
-    ZDT_X42_V2_Stop_Now(MOTOR_FR, 0);
-    ZDT_X42_V2_Stop_Now(MOTOR_RL, 0);
-    ZDT_X42_V2_Stop_Now(MOTOR_RR, 0);
+    Emm_V5_Stop_Now(MOTOR_FL, false);
+    Emm_V5_Stop_Now(MOTOR_FR, false);
+    Emm_V5_Stop_Now(MOTOR_RL, false);
+    Emm_V5_Stop_Now(MOTOR_RR, false);
 }
 
 // /**
