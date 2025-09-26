@@ -1,69 +1,69 @@
 #include "stm32f4xx_hal.h"
 #include "IIC.h"
 
-/* ¶¨ÒåIIC×ÜÏßÁ¬½ÓµÄGPIO¶Ë¿Ú, ÓÃ»§Ö»ÐèÒªÐÞ¸ÄÏÂÃæ4ÐÐ´úÂë¼´¿ÉÈÎÒâ¸Ä±äSCLºÍSDAµÄÒý½Å */
-#define GPIO_PORT_IIC     GPIOB                       /* GPIO¶Ë¿Ú */
-#define RCC_IIC_ENABLE    __HAL_RCC_GPIOB_CLK_ENABLE()       /* GPIO¶Ë¿ÚÊ±ÖÓ */
-#define IIC_SCL_PIN       GPIO_PIN_8                  /* Á¬½Óµ½SCLÊ±ÖÓÏßµÄGPIO */
-#define IIC_SDA_PIN       GPIO_PIN_9                  /* Á¬½Óµ½SDAÊý¾ÝÏßµÄGPIO */
+/* å®šä¹‰IICæ€»çº¿è¿žæŽ¥çš„GPIOç«¯å£, ç”¨æˆ·åªéœ€è¦ä¿®æ”¹ä¸‹é¢4è¡Œä»£ç å³å¯ä»»æ„æ”¹å˜SCLå’ŒSDAçš„å¼•è„š */
+#define GPIO_PORT_IIC     GPIOB                       /* GPIOç«¯å£ */
+#define RCC_IIC_ENABLE    __HAL_RCC_GPIOB_CLK_ENABLE()       /* GPIOç«¯å£æ—¶é’Ÿ */
+#define IIC_SCL_PIN       GPIO_PIN_8                  /* è¿žæŽ¥åˆ°SCLæ—¶é’Ÿçº¿çš„GPIO */
+#define IIC_SDA_PIN       GPIO_PIN_9                  /* è¿žæŽ¥åˆ°SDAæ•°æ®çº¿çš„GPIO */
 
-/* ¶¨Òå¶ÁÐ´SCLºÍSDAµÄºê£¬ÒÑÔö¼Ó´úÂëµÄ¿ÉÒÆÖ²ÐÔºÍ¿ÉÔÄ¶ÁÐÔ */
-#if 1	/* Ìõ¼þ±àÒë£º 1 Ñ¡ÔñGPIOµÄ¿âº¯ÊýÊµÏÖIO¶ÁÐ´ */
+/* å®šä¹‰è¯»å†™SCLå’ŒSDAçš„å®ï¼Œå·²å¢žåŠ ä»£ç çš„å¯ç§»æ¤æ€§å’Œå¯é˜…è¯»æ€§ */
+#if 1	/* æ¡ä»¶ç¼–è¯‘ï¼š 1 é€‰æ‹©GPIOçš„åº“å‡½æ•°å®žçŽ°IOè¯»å†™ */
 #define IIC_SCL_1()  HAL_GPIO_WritePin(GPIO_PORT_IIC, IIC_SCL_PIN, GPIO_PIN_SET)		/* SCL = 1 */
 #define IIC_SCL_0()  HAL_GPIO_WritePin(GPIO_PORT_IIC, IIC_SCL_PIN, GPIO_PIN_RESET)		/* SCL = 0 */
 
 #define IIC_SDA_1()  HAL_GPIO_WritePin(GPIO_PORT_IIC, IIC_SDA_PIN, GPIO_PIN_SET)		/* SDA = 1 */
 #define IIC_SDA_0()  HAL_GPIO_WritePin(GPIO_PORT_IIC, IIC_SDA_PIN, GPIO_PIN_RESET)		/* SDA = 0 */
 
-#define IIC_SDA_READ()  HAL_GPIO_ReadPin(GPIO_PORT_IIC, IIC_SDA_PIN)	/* ¶ÁSDA¿ÚÏß×´Ì¬ */
-#else	/* Õâ¸ö·ÖÖ§Ñ¡ÔñÖ±½Ó¼Ä´æÆ÷²Ù×÷ÊµÏÖIO¶ÁÐ´ */
-/*¡¡×¢Òâ£ºÈçÏÂÐ´·¨£¬ÔÚIAR×î¸ß¼¶±ðÓÅ»¯Ê±£¬»á±»±àÒëÆ÷´íÎóÓÅ»¯ */
+#define IIC_SDA_READ()  HAL_GPIO_ReadPin(GPIO_PORT_IIC, IIC_SDA_PIN)	/* è¯»SDAå£çº¿çŠ¶æ€ */
+#else	/* è¿™ä¸ªåˆ†æ”¯é€‰æ‹©ç›´æŽ¥å¯„å­˜å™¨æ“ä½œå®žçŽ°IOè¯»å†™ */
+/*ã€€æ³¨æ„ï¼šå¦‚ä¸‹å†™æ³•ï¼Œåœ¨IARæœ€é«˜çº§åˆ«ä¼˜åŒ–æ—¶ï¼Œä¼šè¢«ç¼–è¯‘å™¨é”™è¯¯ä¼˜åŒ– */
 #define IIC_SCL_1()  GPIO_PORT_IIC->BSRR = IIC_SCL_PIN				/* SCL = 1 */
 #define IIC_SCL_0()  GPIO_PORT_IIC->BRR = IIC_SCL_PIN				/* SCL = 0 */
 
 #define IIC_SDA_1()  GPIO_PORT_IIC->BSRR = IIC_SDA_PIN				/* SDA = 1 */
 #define IIC_SDA_0()  GPIO_PORT_IIC->BRR = IIC_SDA_PIN				/* SDA = 0 */
 
-#define IIC_SDA_READ()  ((GPIO_PORT_IIC->IDR & IIC_SDA_PIN) != 0)	/* ¶ÁSDA¿ÚÏß×´Ì¬ */
+#define IIC_SDA_READ()  ((GPIO_PORT_IIC->IDR & IIC_SDA_PIN) != 0)	/* è¯»SDAå£çº¿çŠ¶æ€ */
 #endif
 
 void IIC_GPIO_Init(void);
 
 /*
 *********************************************************************************************************
-*	º¯ Êý Ãû: IIC_Delay
-*	¹¦ÄÜËµÃ÷: IIC×ÜÏßÎ»ÑÓ³Ù£¬×î¿ì400KHz
-*	ÐÎ    ²Î£ºÎÞ
-*	·µ »Ø Öµ: ÎÞ
+*	å‡½ æ•° å: IIC_Delay
+*	åŠŸèƒ½è¯´æ˜Ž: IICæ€»çº¿ä½å»¶è¿Ÿï¼Œæœ€å¿«400KHz
+*	å½¢    å‚ï¼šæ— 
+*	è¿” å›ž å€¼: æ— 
 *********************************************************************************************************
 */
 static void IIC_Delay(void)
 {
     uint8_t i;
 
-    /*¡¡
-     	ÏÂÃæµÄÊ±¼äÊÇÍ¨¹ý°²¸»À³AX-ProÂß¼­·ÖÎöÒÇ²âÊÔµÃµ½µÄ¡£
-    	CPUÖ÷Æµ72MHzÊ±£¬ÔÚÄÚ²¿FlashÔËÐÐ, MDK¹¤³Ì²»ÓÅ»¯
-    	Ñ­»·´ÎÊýÎª10Ê±£¬SCLÆµÂÊ = 205KHz
-    	Ñ­»·´ÎÊýÎª7Ê±£¬SCLÆµÂÊ = 347KHz£¬ SCL¸ßµçÆ½Ê±¼ä1.5us£¬SCLµÍµçÆ½Ê±¼ä2.87us
-     	Ñ­»·´ÎÊýÎª5Ê±£¬SCLÆµÂÊ = 421KHz£¬ SCL¸ßµçÆ½Ê±¼ä1.25us£¬SCLµÍµçÆ½Ê±¼ä2.375us
+    /*ã€€
+     	ä¸‹é¢çš„æ—¶é—´æ˜¯é€šè¿‡å®‰å¯ŒèŽ±AX-Proé€»è¾‘åˆ†æžä»ªæµ‹è¯•å¾—åˆ°çš„ã€‚
+    	CPUä¸»é¢‘72MHzæ—¶ï¼Œåœ¨å†…éƒ¨Flashè¿è¡Œ, MDKå·¥ç¨‹ä¸ä¼˜åŒ–
+    	å¾ªçŽ¯æ¬¡æ•°ä¸º10æ—¶ï¼ŒSCLé¢‘çŽ‡ = 205KHz
+    	å¾ªçŽ¯æ¬¡æ•°ä¸º7æ—¶ï¼ŒSCLé¢‘çŽ‡ = 347KHzï¼Œ SCLé«˜ç”µå¹³æ—¶é—´1.5usï¼ŒSCLä½Žç”µå¹³æ—¶é—´2.87us
+     	å¾ªçŽ¯æ¬¡æ•°ä¸º5æ—¶ï¼ŒSCLé¢‘çŽ‡ = 421KHzï¼Œ SCLé«˜ç”µå¹³æ—¶é—´1.25usï¼ŒSCLä½Žç”µå¹³æ—¶é—´2.375us
 
-    IAR¹¤³Ì±àÒëÐ§ÂÊ¸ß£¬²»ÄÜÉèÖÃÎª7
+    IARå·¥ç¨‹ç¼–è¯‘æ•ˆçŽ‡é«˜ï¼Œä¸èƒ½è®¾ç½®ä¸º7
     */
     for (i = 0; i < 10; i++);
 }
 
 /*
 *********************************************************************************************************
-*	º¯ Êý Ãû: IIC_Start
-*	¹¦ÄÜËµÃ÷: CPU·¢ÆðIIC×ÜÏßÆô¶¯ÐÅºÅ
-*	ÐÎ    ²Î£ºÎÞ
-*	·µ »Ø Öµ: ÎÞ
+*	å‡½ æ•° å: IIC_Start
+*	åŠŸèƒ½è¯´æ˜Ž: CPUå‘èµ·IICæ€»çº¿å¯åŠ¨ä¿¡å·
+*	å½¢    å‚ï¼šæ— 
+*	è¿” å›ž å€¼: æ— 
 *********************************************************************************************************
 */
 void IIC_Start(void)
 {
-    /* µ±SCL¸ßµçÆ½Ê±£¬SDA³öÏÖÒ»¸öÏÂÌøÑØ±íÊ¾IIC×ÜÏßÆô¶¯ÐÅºÅ */
+    /* å½“SCLé«˜ç”µå¹³æ—¶ï¼ŒSDAå‡ºçŽ°ä¸€ä¸ªä¸‹è·³æ²¿è¡¨ç¤ºIICæ€»çº¿å¯åŠ¨ä¿¡å· */
     IIC_SDA_1();
     IIC_SCL_1();
     IIC_Delay();
@@ -75,15 +75,15 @@ void IIC_Start(void)
 
 /*
 *********************************************************************************************************
-*	º¯ Êý Ãû: IIC_Start
-*	¹¦ÄÜËµÃ÷: CPU·¢ÆðIIC×ÜÏßÍ£Ö¹ÐÅºÅ
-*	ÐÎ    ²Î£ºÎÞ
-*	·µ »Ø Öµ: ÎÞ
+*	å‡½ æ•° å: IIC_Start
+*	åŠŸèƒ½è¯´æ˜Ž: CPUå‘èµ·IICæ€»çº¿åœæ­¢ä¿¡å·
+*	å½¢    å‚ï¼šæ— 
+*	è¿” å›ž å€¼: æ— 
 *********************************************************************************************************
 */
 void IIC_Stop(void)
 {
-    /* µ±SCL¸ßµçÆ½Ê±£¬SDA³öÏÖÒ»¸öÉÏÌøÑØ±íÊ¾IIC×ÜÏßÍ£Ö¹ÐÅºÅ */
+    /* å½“SCLé«˜ç”µå¹³æ—¶ï¼ŒSDAå‡ºçŽ°ä¸€ä¸ªä¸Šè·³æ²¿è¡¨ç¤ºIICæ€»çº¿åœæ­¢ä¿¡å· */
     IIC_SDA_0();
     IIC_SCL_1();
     IIC_Delay();
@@ -92,17 +92,17 @@ void IIC_Stop(void)
 
 /*
 *********************************************************************************************************
-*	º¯ Êý Ãû: IIC_SendByte
-*	¹¦ÄÜËµÃ÷: CPUÏòIIC×ÜÏßÉè±¸·¢ËÍ8bitÊý¾Ý
-*	ÐÎ    ²Î£º_ucByte £º µÈ´ý·¢ËÍµÄ×Ö½Ú
-*	·µ »Ø Öµ: ÎÞ
+*	å‡½ æ•° å: IIC_SendByte
+*	åŠŸèƒ½è¯´æ˜Ž: CPUå‘IICæ€»çº¿è®¾å¤‡å‘é€8bitæ•°æ®
+*	å½¢    å‚ï¼š_ucByte ï¼š ç­‰å¾…å‘é€çš„å­—èŠ‚
+*	è¿” å›ž å€¼: æ— 
 *********************************************************************************************************
 */
 void IIC_Send_Byte(uint8_t _ucByte)
 {
     uint8_t i;
 
-    /* ÏÈ·¢ËÍ×Ö½ÚµÄ¸ßÎ»bit7 */
+    /* å…ˆå‘é€å­—èŠ‚çš„é«˜ä½bit7 */
     for (i = 0; i < 8; i++)
     {
         if (_ucByte & 0x80)
@@ -119,19 +119,19 @@ void IIC_Send_Byte(uint8_t _ucByte)
         IIC_SCL_0();
         if (i == 7)
         {
-            IIC_SDA_1(); // ÊÍ·Å×ÜÏß
+            IIC_SDA_1(); // é‡Šæ”¾æ€»çº¿
         }
-        _ucByte <<= 1;	/* ×óÒÆÒ»¸öbit */
+        _ucByte <<= 1;	/* å·¦ç§»ä¸€ä¸ªbit */
         IIC_Delay();
     }
 }
 
 /*
 *********************************************************************************************************
-*	º¯ Êý Ãû: IIC_ReadByte
-*	¹¦ÄÜËµÃ÷: CPU´ÓIIC×ÜÏßÉè±¸¶ÁÈ¡8bitÊý¾Ý
-*	ÐÎ    ²Î£ºÎÞ
-*	·µ »Ø Öµ: ¶Áµ½µÄÊý¾Ý
+*	å‡½ æ•° å: IIC_ReadByte
+*	åŠŸèƒ½è¯´æ˜Ž: CPUä»ŽIICæ€»çº¿è®¾å¤‡è¯»å–8bitæ•°æ®
+*	å½¢    å‚ï¼šæ— 
+*	è¿” å›ž å€¼: è¯»åˆ°çš„æ•°æ®
 *********************************************************************************************************
 */
 uint8_t IIC_Read_Byte(uint8_t ack)
@@ -139,7 +139,7 @@ uint8_t IIC_Read_Byte(uint8_t ack)
     uint8_t i;
     uint8_t value;
 
-    /* ¶Áµ½µÚ1¸öbitÎªÊý¾ÝµÄbit7 */
+    /* è¯»åˆ°ç¬¬1ä¸ªbitä¸ºæ•°æ®çš„bit7 */
     value = 0;
     for (i = 0; i < 8; i++)
     {
@@ -162,21 +162,21 @@ uint8_t IIC_Read_Byte(uint8_t ack)
 
 /*
 *********************************************************************************************************
-*	º¯ Êý Ãû: IIC_WaitAck
-*	¹¦ÄÜËµÃ÷: CPU²úÉúÒ»¸öÊ±ÖÓ£¬²¢¶ÁÈ¡Æ÷¼þµÄACKÓ¦´ðÐÅºÅ
-*	ÐÎ    ²Î£ºÎÞ
-*	·µ »Ø Öµ: ·µ»Ø0±íÊ¾ÕýÈ·Ó¦´ð£¬1±íÊ¾ÎÞÆ÷¼þÏìÓ¦
+*	å‡½ æ•° å: IIC_WaitAck
+*	åŠŸèƒ½è¯´æ˜Ž: CPUäº§ç”Ÿä¸€ä¸ªæ—¶é’Ÿï¼Œå¹¶è¯»å–å™¨ä»¶çš„ACKåº”ç­”ä¿¡å·
+*	å½¢    å‚ï¼šæ— 
+*	è¿” å›ž å€¼: è¿”å›ž0è¡¨ç¤ºæ­£ç¡®åº”ç­”ï¼Œ1è¡¨ç¤ºæ— å™¨ä»¶å“åº”
 *********************************************************************************************************
 */
 uint8_t IIC_Wait_Ack(void)
 {
     uint8_t re;
 
-    IIC_SDA_1();	/* CPUÊÍ·ÅSDA×ÜÏß */
+    IIC_SDA_1();	/* CPUé‡Šæ”¾SDAæ€»çº¿ */
     IIC_Delay();
-    IIC_SCL_1();	/* CPUÇý¶¯SCL = 1, ´ËÊ±Æ÷¼þ»á·µ»ØACKÓ¦´ð */
+    IIC_SCL_1();	/* CPUé©±åŠ¨SCL = 1, æ­¤æ—¶å™¨ä»¶ä¼šè¿”å›žACKåº”ç­” */
     IIC_Delay();
-    if (IIC_SDA_READ())	/* CPU¶ÁÈ¡SDA¿ÚÏß×´Ì¬ */
+    if (IIC_SDA_READ())	/* CPUè¯»å–SDAå£çº¿çŠ¶æ€ */
     {
         re = 1;
     }
@@ -191,36 +191,36 @@ uint8_t IIC_Wait_Ack(void)
 
 /*
 *********************************************************************************************************
-*	º¯ Êý Ãû: IIC_Ack
-*	¹¦ÄÜËµÃ÷: CPU²úÉúÒ»¸öACKÐÅºÅ
-*	ÐÎ    ²Î£ºÎÞ
-*	·µ »Ø Öµ: ÎÞ
+*	å‡½ æ•° å: IIC_Ack
+*	åŠŸèƒ½è¯´æ˜Ž: CPUäº§ç”Ÿä¸€ä¸ªACKä¿¡å·
+*	å½¢    å‚ï¼šæ— 
+*	è¿” å›ž å€¼: æ— 
 *********************************************************************************************************
 */
 void IIC_Ack(void)
 {
-    IIC_SDA_0();	/* CPUÇý¶¯SDA = 0 */
+    IIC_SDA_0();	/* CPUé©±åŠ¨SDA = 0 */
     IIC_Delay();
-    IIC_SCL_1();	/* CPU²úÉú1¸öÊ±ÖÓ */
+    IIC_SCL_1();	/* CPUäº§ç”Ÿ1ä¸ªæ—¶é’Ÿ */
     IIC_Delay();
     IIC_SCL_0();
     IIC_Delay();
-    IIC_SDA_1();	/* CPUÊÍ·ÅSDA×ÜÏß */
+    IIC_SDA_1();	/* CPUé‡Šæ”¾SDAæ€»çº¿ */
 }
 
 /*
 *********************************************************************************************************
-*	º¯ Êý Ãû: IIC_NAck
-*	¹¦ÄÜËµÃ÷: CPU²úÉú1¸öNACKÐÅºÅ
-*	ÐÎ    ²Î£ºÎÞ
-*	·µ »Ø Öµ: ÎÞ
+*	å‡½ æ•° å: IIC_NAck
+*	åŠŸèƒ½è¯´æ˜Ž: CPUäº§ç”Ÿ1ä¸ªNACKä¿¡å·
+*	å½¢    å‚ï¼šæ— 
+*	è¿” å›ž å€¼: æ— 
 *********************************************************************************************************
 */
 void IIC_NAck(void)
 {
-    IIC_SDA_1();	/* CPUÇý¶¯SDA = 1 */
+    IIC_SDA_1();	/* CPUé©±åŠ¨SDA = 1 */
     IIC_Delay();
-    IIC_SCL_1();	/* CPU²úÉú1¸öÊ±ÖÓ */
+    IIC_SCL_1();	/* CPUäº§ç”Ÿ1ä¸ªæ—¶é’Ÿ */
     IIC_Delay();
     IIC_SCL_0();
     IIC_Delay();
@@ -228,48 +228,48 @@ void IIC_NAck(void)
 
 /*
 *********************************************************************************************************
-*	º¯ Êý Ãû: IIC_GPIO_Config
-*	¹¦ÄÜËµÃ÷: ÅäÖÃIIC×ÜÏßµÄGPIO£¬²ÉÓÃÄ£ÄâIOµÄ·½Ê½ÊµÏÖ
-*	ÐÎ    ²Î£ºÎÞ
-*	·µ »Ø Öµ: ÎÞ
+*	å‡½ æ•° å: IIC_GPIO_Config
+*	åŠŸèƒ½è¯´æ˜Ž: é…ç½®IICæ€»çº¿çš„GPIOï¼Œé‡‡ç”¨æ¨¡æ‹ŸIOçš„æ–¹å¼å®žçŽ°
+*	å½¢    å‚ï¼šæ— 
+*	è¿” å›ž å€¼: æ— 
 *********************************************************************************************************
 */
 void IIC_GPIO_Init(void)
 {
     GPIO_InitTypeDef GPIO_InitStructure;
 
-    RCC_IIC_ENABLE;	/* ´ò¿ªGPIOÊ±ÖÓ */
+    RCC_IIC_ENABLE;	/* æ‰“å¼€GPIOæ—¶é’Ÿ */
 
     GPIO_InitStructure.Pin = IIC_SCL_PIN | IIC_SDA_PIN;
     GPIO_InitStructure.Speed = GPIO_SPEED_FREQ_HIGH;
-    GPIO_InitStructure.Mode = GPIO_MODE_OUTPUT_OD;  	/* ¿ªÂ©Êä³ö */
+    GPIO_InitStructure.Mode = GPIO_MODE_OUTPUT_OD;  	/* å¼€æ¼è¾“å‡º */
     HAL_GPIO_Init(GPIO_PORT_IIC, &GPIO_InitStructure);
 
-    /* ¸øÒ»¸öÍ£Ö¹ÐÅºÅ, ¸´Î»IIC×ÜÏßÉÏµÄËùÓÐÉè±¸µ½´ý»úÄ£Ê½ */
+    /* ç»™ä¸€ä¸ªåœæ­¢ä¿¡å·, å¤ä½IICæ€»çº¿ä¸Šçš„æ‰€æœ‰è®¾å¤‡åˆ°å¾…æœºæ¨¡å¼ */
     IIC_Stop();
 }
 
 /*
 *********************************************************************************************************
-*	º¯ Êý Ãû: IIC_CheckDevice
-*	¹¦ÄÜËµÃ÷: ¼ì²âIIC×ÜÏßÉè±¸£¬CPUÏò·¢ËÍÉè±¸µØÖ·£¬È»ºó¶ÁÈ¡Éè±¸Ó¦´ðÀ´ÅÐ¶Ï¸ÃÉè±¸ÊÇ·ñ´æÔÚ
-*	ÐÎ    ²Î£º_Address£ºÉè±¸µÄIIC×ÜÏßµØÖ·
-*	·µ »Ø Öµ: ·µ»ØÖµ 0 ±íÊ¾ÕýÈ·£¬ ·µ»Ø1±íÊ¾Î´Ì½²âµ½
+*	å‡½ æ•° å: IIC_CheckDevice
+*	åŠŸèƒ½è¯´æ˜Ž: æ£€æµ‹IICæ€»çº¿è®¾å¤‡ï¼ŒCPUå‘å‘é€è®¾å¤‡åœ°å€ï¼Œç„¶åŽè¯»å–è®¾å¤‡åº”ç­”æ¥åˆ¤æ–­è¯¥è®¾å¤‡æ˜¯å¦å­˜åœ¨
+*	å½¢    å‚ï¼š_Addressï¼šè®¾å¤‡çš„IICæ€»çº¿åœ°å€
+*	è¿” å›ž å€¼: è¿”å›žå€¼ 0 è¡¨ç¤ºæ­£ç¡®ï¼Œ è¿”å›ž1è¡¨ç¤ºæœªæŽ¢æµ‹åˆ°
 *********************************************************************************************************
 */
 uint8_t IIC_CheckDevice(uint8_t _Address)
 {
     uint8_t ucAck;
 
-    IIC_GPIO_Init();		/* ÅäÖÃGPIO */
+    IIC_GPIO_Init();		/* é…ç½®GPIO */
 
-    IIC_Start();		/* ·¢ËÍÆô¶¯ÐÅºÅ */
+    IIC_Start();		/* å‘é€å¯åŠ¨ä¿¡å· */
 
-    /* ·¢ËÍÉè±¸µØÖ·+¶ÁÐ´¿ØÖÆbit£¨0 = w£¬ 1 = r) bit7 ÏÈ´« */
+    /* å‘é€è®¾å¤‡åœ°å€+è¯»å†™æŽ§åˆ¶bitï¼ˆ0 = wï¼Œ 1 = r) bit7 å…ˆä¼  */
     IIC_Send_Byte(_Address|IIC_WR);
-    ucAck = IIC_Wait_Ack();	/* ¼ì²âÉè±¸µÄACKÓ¦´ð */
+    ucAck = IIC_Wait_Ack();	/* æ£€æµ‹è®¾å¤‡çš„ACKåº”ç­” */
 
-    IIC_Stop();			/* ·¢ËÍÍ£Ö¹ÐÅºÅ */
+    IIC_Stop();			/* å‘é€åœæ­¢ä¿¡å· */
 
     return ucAck;
 }

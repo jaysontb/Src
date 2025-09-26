@@ -29,6 +29,10 @@
 /* USER CODE BEGIN Includes */
 
 #include "Emm_V5.h"
+#include "MPU6050.h"
+#include "inv_mpu.h"
+#include "servo.h"
+#include "oled.h"
 
 /* USER CODE END Includes */
 
@@ -99,24 +103,27 @@ int main(void)
   MX_TIM1_Init();
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
+  OLED_Init();
   /* USER CODE BEGIN 2 */
-	__HAL_UART_CLEAR_IDLEFLAG(&huart1); 											
-	__HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE); 							
-  HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN); 
-  /* USER CODE BEGIN WHILE */
 
-	HAL_Delay(1000);
+	// __HAL_UART_CLEAR_IDLEFLAG(&huart1); 											
+	// __HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE); 							
+  // HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN); 
+  
+  // HAL_Delay(1000);
 
-  Emm_V5_Pos_Control(1, 0, 100, 10, 3200, 0, 1);
-  HAL_Delay(100);
+  // Emm_V5_Pos_Control(1, 0, 100, 10, 3200, 0, 1);
+  // HAL_Delay(100);
 
-  Emm_V5_Pos_Control(2, 0, 100, 10, 3200, 0, 1);
-  HAL_Delay(100);
+  // Emm_V5_Pos_Control(2, 0, 100, 10, 3200, 0, 1);
+  // HAL_Delay(100);
 
-  Emm_V5_Synchronous_motion(0);
-  HAL_Delay(10);
+  // Emm_V5_Synchronous_motion(0);
+  // HAL_Delay(10);
 
-	while(rxCmd[1] != 0xFD || rxCmd[2] != 0x9F); rxFrameFlag = false;
+	// while(rxCmd[1] != 0xFD || rxCmd[2] != 0x9F); rxFrameFlag = false;
+
+  OLED_ShowNum(1,1,100,3);
 
   /* USER CODE END 2 */
 
