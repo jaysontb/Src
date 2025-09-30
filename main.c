@@ -148,7 +148,7 @@ int main(void)
 	// while(rxCmd[1] != 0xFD || rxCmd[2] != 0x9F); rxFrameFlag = false;
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-  Servo_SetAngle1(270.0f);
+  Servo_SetAngle1(90.0f);
 
   /* USER CODE END 2 */
 
