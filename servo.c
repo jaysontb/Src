@@ -1,6 +1,5 @@
 #include "servo.h"
 #include "tim.h"
-#include "math.h"
 
 static uint16_t Servo_AngleToPulse1(float angle)
 {
@@ -57,7 +56,7 @@ void Servo_SetAngle2(float angle)
 }
 
 /**
-  * @brief  设置物料盘舵机的角度
+  * @brief  设置机械臂前后运动的距离
   * @param  angle: 0.0 ~ 180.0
   * @retval None
   */

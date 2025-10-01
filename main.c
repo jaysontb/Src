@@ -34,6 +34,7 @@
 #include "servo.h"
 #include "oled.h"
 #include <stdio.h>
+#include "test.h"
 
 /* USER CODE END Includes */
 
@@ -108,7 +109,6 @@ int main(void)
   MX_TIM1_Init();
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
-  OLED_Init();
   /* USER CODE BEGIN 2 */
 
   // mpu_ready = (mpu_dmp_init() == 0U);
@@ -147,8 +147,7 @@ int main(void)
 
 	// while(rxCmd[1] != 0xFD || rxCmd[2] != 0x9F); rxFrameFlag = false;
 
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-  Servo_SetAngle1(90.0f);
+  Test_2();
 
   /* USER CODE END 2 */
 
@@ -177,8 +176,7 @@ int main(void)
     //     OLED_ShowString(1, 1, "MPU DATA FAIL ");
     //   }
     // }
-    // HAL_Delay(50);
-  
+    // HAL_Delay(50); 
   
   
   

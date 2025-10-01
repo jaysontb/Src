@@ -232,12 +232,7 @@ void OLED_ShowBinNum(uint8_t Line, uint8_t Column, uint32_t Number, uint8_t Leng
   */
 void OLED_Init(void)
 {
-	uint32_t i, j;
-	
-	for (i = 0; i < 1000; i++)			//上电延时
-	{
-		for (j = 0; j < 1000; j++);
-	}
+	HAL_Delay(20);               // 上电稳定时间
 	
 	OLED_WriteCommand(0xAE);	//关闭显示
 	
