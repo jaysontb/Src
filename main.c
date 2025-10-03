@@ -35,6 +35,8 @@
 #include "oled.h"
 #include <stdio.h>
 #include "test.h"
+#include "visual_comm.h"    // 添加视觉通信头文件
+#include "visual_test.h"    // 添加视觉测试头文件
 
 /* USER CODE END Includes */
 
@@ -111,6 +113,20 @@ int main(void)
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
 
+  // ==================== 视觉通信初始化 ====================
+  Visual_Data_Init();          // 初始化视觉数据结构
+  Visual_UART_Start_Receive(); // 启动串口接收
+  
+  // 延时等待LubanCat启动(可选)
+  HAL_Delay(500);
+  
+  // ==================== 执行视觉测试 ====================
+  // 取消注释以下任意一行进行测试:
+  
+  Visual_Test_Basic();      // 基础测试(单次测试物料/凸台/二维码)
+  // Visual_Test_FullTask();   // 完整任务流程测试
+  
+  // ==================== 原有测试代码 ====================
   // mpu_ready = (mpu_dmp_init() == 0U);
   // if (mpu_ready)
   // {
@@ -158,6 +174,25 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    
+    // ==================== 视觉数据接收处理 ====================
+    if (visual_rx_complete_flag)  // 检测到视觉数据
+    {
+        // 解析接收数据
+        Visual_Data_Unpack(Visual_Get_RxBuffer());
+        
+        // 清除标志
+        Visual_Clear_RxFlag(); 
+        
+        // TODO: 这里添加你的业务逻辑
+        // 例如: 根据接收到的坐标控制电机运动
+    }
+    
+    // ==================== 循环测试(可选) ====================
+    // 取消注释以下行进行连续测试:
+    // Visual_Test_Loop();
+    
+    // ==================== MPU6050姿态显示(原有代码) ====================
     // if (mpu_ready)
     // {
     //   if (mpu_dmp_get_data(&pitch, &roll, &yaw) == 0U)

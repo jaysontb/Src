@@ -1,9 +1,12 @@
 /**
   ******************************************************************************
-  * @author  YOUR_NAME
-  * @version V1.0
-  * @date    2025-09-21
-  * @brief   视觉通信中枢实现 - 适配LubanCat上位机
+  * @file           : visual_comm.c
+  * @brief          : 视觉通信模块 - LubanCat视觉系统通信接口
+  * @author         : Auto-generated
+  * @version        : V1.0
+  * @date           : 2025-01-03
+  * @note           : 实现STM32与LubanCat2视觉系统的串口通信
+  *                   协议格式: [0x66, unit, target, 0x77]
   ******************************************************************************
   */
 
@@ -12,6 +15,22 @@
 /* 全局变量定义 */
 VisualRxData_t VIS_RX;
 uint8_t color_task[6] = {0};
+
+/* ==================== 串口接收状态机相关变量 ==================== */
+typedef enum
+{
+    RX_STATE_WAIT_HEADER,   // 等待帧头0x66
+    RX_STATE_GET_UNIT,      // 接收unit(任务码)
+    RX_STATE_GET_DATA,      // 接收数据部分
+    RX_STATE_VERIFY_TAIL    // 验证帧尾0x77
+} RxState_t;
+
+static RxState_t rx_state = RX_STATE_WAIT_HEADER;
+static uint8_t rx_buffer[10];        // 接收缓冲区(最长9字节)
+static uint8_t rx_index = 0;         // 当前接收索引
+static uint8_t rx_expected_len = 0;  // 期望数据长度
+static uint8_t rx_byte;              // 单字节接收缓存
+uint8_t visual_rx_complete_flag = 0; // 接收完成标志(供main.c使用)
 
 //-------------------------------------------------------------------------------------------------------------------
 //  @brief      视觉数据初始化
@@ -34,13 +53,6 @@ void Visual_Data_Init(void)
     VIS_RX.platform_y = 0;
     VIS_RX.slot_x = 0;
     VIS_RX.slot_y = 0;
-    
-    // 色环和物料盘数据清零
-    VIS_RX.rgb_circle_x = 0;
-    VIS_RX.rgb_circle_y = 0;
-    VIS_RX.rgb_circle_z = 0;
-    VIS_RX.tray_center_x = 0;
-    VIS_RX.tray_center_y = 0;
     
     // 控制指令清零
     VIS_RX.block_grab = 0;
@@ -65,9 +77,9 @@ void Visual_Send_Idle(void)
     uint8_t lubancat_data[4];
     
     lubancat_data[0] = 0x66;      // 帧头
-    lubancat_data[1] = TASK_IDLE; // 任务码：空闲
+    lubancat_data[1] = TASK_IDLE; // 任务码:空闲
     lubancat_data[2] = 0x00;      // 参数
-    lubancat_data[3] = 0x00;      // 校验和
+    lubancat_data[3] = 0x77;      // 帧尾(固定0x77)
     
     HAL_UART_Transmit(&huart2, lubancat_data, 4, HAL_MAX_DELAY);
 }
@@ -82,26 +94,9 @@ void Visual_Send_QRCode_Request(void)
     uint8_t lubancat_data[4];
     
     lubancat_data[0] = 0x66;         // 帧头
-    lubancat_data[1] = TASK_QR_CODE; // 任务码：二维码识别
+    lubancat_data[1] = TASK_QR_CODE; // 任务码:二维码识别
     lubancat_data[2] = 0x00;         // 参数
-    lubancat_data[3] = 0x00;         // 校验和
-    
-    HAL_UART_Transmit(&huart2, lubancat_data, 4, HAL_MAX_DELAY);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-//  @brief      请求识别物料盘
-//  @return     void
-//  @param      void
-//-------------------------------------------------------------------------------------------------------------------
-void Visual_Send_Tray_Request(void)
-{
-    uint8_t lubancat_data[4];
-    
-    lubancat_data[0] = 0x66;             // 帧头
-    lubancat_data[1] = TASK_IDENTIFY_TRAY; // 任务码：物料盘识别
-    lubancat_data[2] = 0x00;             // 参数
-    lubancat_data[3] = lubancat_data[1] + lubancat_data[2]; // 校验和
+    lubancat_data[3] = 0x77;         // 帧尾(固定0x77)
     
     HAL_UART_Transmit(&huart2, lubancat_data, 4, HAL_MAX_DELAY);
 }
@@ -116,9 +111,9 @@ void Visual_Send_Material_Request(uint8_t color)
     uint8_t lubancat_data[4];
     
     lubancat_data[0] = 0x66;                  // 帧头
-    lubancat_data[1] = TASK_IDENTIFY_MATERIAL; // 任务码：物料识别
-    lubancat_data[2] = color;                 // 参数：颜色
-    lubancat_data[3] = lubancat_data[1] + lubancat_data[2]; // 校验和
+    lubancat_data[1] = TASK_IDENTIFY_MATERIAL; // 任务码:物料识别
+    lubancat_data[2] = color;                 // 参数:颜色
+    lubancat_data[3] = 0x77;                  // 帧尾(固定0x77)
     
     HAL_UART_Transmit(&huart2, lubancat_data, 4, HAL_MAX_DELAY);
 }
@@ -133,9 +128,9 @@ void Visual_Send_Platform_Request(uint8_t color)
     uint8_t lubancat_data[4];
     
     lubancat_data[0] = 0x66;           // 帧头
-    lubancat_data[1] = TASK_PLATFORM;  // 任务码：凸台识别
-    lubancat_data[2] = color;          // 参数：颜色
-    lubancat_data[3] = lubancat_data[1] + lubancat_data[2]; // 校验和
+    lubancat_data[1] = TASK_PLATFORM;  // 任务码:凸台识别
+    lubancat_data[2] = color;          // 参数:颜色
+    lubancat_data[3] = 0x77;           // 帧尾(固定0x77)
     
     HAL_UART_Transmit(&huart2, lubancat_data, 4, HAL_MAX_DELAY);
 }
@@ -150,60 +145,9 @@ void Visual_Send_Slot_Request(uint8_t color)
     uint8_t lubancat_data[4];
     
     lubancat_data[0] = 0x66;        // 帧头
-    lubancat_data[1] = TASK_SLOT;   // 任务码：凹槽识别
-    lubancat_data[2] = color;       // 参数：颜色
-    lubancat_data[3] = lubancat_data[1] + lubancat_data[2]; // 校验和
-    
-    HAL_UART_Transmit(&huart2, lubancat_data, 4, HAL_MAX_DELAY);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-//  @brief      请求识别色环位置
-//  @return     void
-//  @param      void
-//-------------------------------------------------------------------------------------------------------------------
-void Visual_Send_Rings_Request(void)
-{
-    uint8_t lubancat_data[4];
-    
-    lubancat_data[0] = 0x66;              // 帧头
-    lubancat_data[1] = TASK_IDENTIFY_RINGS; // 任务码：色环识别
-    lubancat_data[2] = 0x00;              // 参数
-    lubancat_data[3] = lubancat_data[1] + lubancat_data[2]; // 校验和
-    
-    HAL_UART_Transmit(&huart2, lubancat_data, 4, HAL_MAX_DELAY);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-//  @brief      请求码垛定位
-//  @return     void
-//  @param      void
-//-------------------------------------------------------------------------------------------------------------------
-void Visual_Send_Stacking_Request(void)
-{
-    uint8_t lubancat_data[4];
-    
-    lubancat_data[0] = 0x66;            // 帧头
-    lubancat_data[1] = TASK_STACKING_POS; // 任务码：码垛定位
-    lubancat_data[2] = 0x00;            // 参数
-    lubancat_data[3] = lubancat_data[1] + lubancat_data[2]; // 校验和
-    
-    HAL_UART_Transmit(&huart2, lubancat_data, 4, HAL_MAX_DELAY);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-//  @brief      发送调试指令
-//  @return     void
-//  @param      debug_cmd: 调试命令
-//-------------------------------------------------------------------------------------------------------------------
-void Visual_Send_Debug_Request(uint8_t debug_cmd)
-{
-    uint8_t lubancat_data[4];
-    
-    lubancat_data[0] = 0x66;        // 帧头
-    lubancat_data[1] = TASK_DEBUG;  // 任务码：调试
-    lubancat_data[2] = debug_cmd;   // 参数：调试命令
-    lubancat_data[3] = lubancat_data[1] + lubancat_data[2]; // 校验和
+    lubancat_data[1] = TASK_SLOT;   // 任务码:凹槽识别
+    lubancat_data[2] = color;       // 参数:颜色
+    lubancat_data[3] = 0x77;        // 帧尾(固定0x77)
     
     HAL_UART_Transmit(&huart2, lubancat_data, 4, HAL_MAX_DELAY);
 }
@@ -223,13 +167,6 @@ void Visual_Data_Unpack(uint8_t *lubancat_data)
     // 根据任务码解析数据
     switch(lubancat_data[1])
     {
-        case TASK_IDENTIFY_TRAY:    // 物料盘位置
-            if (lubancat_data[6] != 0x77)    // 校验帧尾
-                return;
-            VIS_RX.tray_center_x = (lubancat_data[2] << 8) | lubancat_data[3];
-            VIS_RX.tray_center_y = (lubancat_data[4] << 8) | lubancat_data[5];
-            break;
-            
         case TASK_IDENTIFY_MATERIAL:    // 物料位置
             if (lubancat_data[7] != 0x77)    // 校验帧尾
                 return;
@@ -264,23 +201,8 @@ void Visual_Data_Unpack(uint8_t *lubancat_data)
             VIS_RX.slot_y = (lubancat_data[4] << 8) | lubancat_data[5];
             break;
             
-        case TASK_IDENTIFY_RINGS:    // 色环位置和Z轴偏差
-            if (lubancat_data[8] != 0x77)    // 校验帧尾
-                return;
-            VIS_RX.rgb_circle_x = (lubancat_data[2] << 8) | lubancat_data[3];
-            VIS_RX.rgb_circle_y = (lubancat_data[4] << 8) | lubancat_data[5];
-            VIS_RX.rgb_circle_z = (int16_t)((lubancat_data[6] << 8) | lubancat_data[7]);
-            break;
-            
-        case TASK_STACKING_POS:    // 码垛定位
-            if (lubancat_data[8] != 0x77)    // 校验帧尾
-                return;
-            VIS_RX.rgb_circle_x = (lubancat_data[2] << 8) | lubancat_data[3];
-            VIS_RX.rgb_circle_y = (lubancat_data[4] << 8) | lubancat_data[5];
-            VIS_RX.rgb_circle_z = (int16_t)((lubancat_data[6] << 8) | lubancat_data[7]);
-            break;
-            
         case TASK_QR_CODE:    // 二维码数据
+        {
             if (lubancat_data[8] != 0x77)    // 校验帧尾
                 return;
             
@@ -311,32 +233,11 @@ void Visual_Data_Unpack(uint8_t *lubancat_data)
                 VIS_RX.qr_valid = 0;
             }
             break;
-            
-        case TASK_DEBUG:    // 调试模式
-            if (lubancat_data[3] != 0x77)    // 校验帧尾
-                return;
-            // 这里可以添加LED控制或其他调试功能
-            break;
+        }
             
         default:
             break;
     }
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-//  @brief      计算校验和
-//  @return     uint8_t: 校验和值
-//  @param      data: 数据指针
-//  @param      len: 数据长度
-//-------------------------------------------------------------------------------------------------------------------
-uint8_t Visual_Calculate_Checksum(uint8_t *data, uint8_t len)
-{
-    uint8_t checksum = 0;
-    for(uint8_t i = 0; i < len; i++)
-    {
-        checksum += data[i];
-    }
-    return checksum;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -356,4 +257,121 @@ uint8_t Visual_Verify_Frame(uint8_t *data, uint8_t expected_tail_pos)
         return 0;
     
     return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+//  @brief      启动视觉串口接收
+//  @return     void
+//  @param      void
+//  @note       在main.c初始化时调用,启动单字节中断接收
+//-------------------------------------------------------------------------------------------------------------------
+void Visual_UART_Start_Receive(void)
+{
+    rx_state = RX_STATE_WAIT_HEADER;
+    rx_index = 0;
+    visual_rx_complete_flag = 0;
+    
+    // 启动单字节中断接收
+    HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+//  @brief      串口接收回调函数(状态机处理)
+//  @return     void
+//  @param      void
+//  @note       在HAL_UART_RxCpltCallback中调用,单字节处理逻辑
+//-------------------------------------------------------------------------------------------------------------------
+void Visual_UART_RxCallback(void)
+{
+    switch (rx_state)
+    {
+        case RX_STATE_WAIT_HEADER:
+            if (rx_byte == 0x66)  // 检测到帧头
+            {
+                rx_buffer[0] = 0x66;
+                rx_index = 1;
+                rx_state = RX_STATE_GET_UNIT;
+            }
+            break;
+            
+        case RX_STATE_GET_UNIT:
+            rx_buffer[1] = rx_byte;  // 保存unit(任务码)
+            
+            // 根据unit确定后续数据长度
+            switch (rx_byte)
+            {
+                case TASK_IDENTIFY_MATERIAL:  // 0x02: 物料识别
+                    rx_expected_len = 5;      // color(1) + x(2) + y(2)
+                    break;
+                    
+                case TASK_QR_CODE:            // 0x09: 二维码
+                    rx_expected_len = 6;      // 6个ASCII字符
+                    break;
+                    
+                case TASK_PLATFORM:           // 0x0A: 凸台
+                case TASK_SLOT:               // 0x0B: 凹槽
+                    rx_expected_len = 4;      // x(2) + y(2)
+                    break;
+                    
+                default:  // 未知任务码,重置状态机
+                    rx_state = RX_STATE_WAIT_HEADER;
+                    rx_index = 0;
+                    break;
+            }
+            
+            if (rx_expected_len > 0)
+            {
+                rx_index = 2;
+                rx_state = RX_STATE_GET_DATA;
+            }
+            break;
+            
+        case RX_STATE_GET_DATA:
+            rx_buffer[rx_index++] = rx_byte;
+            
+            // 数据接收完毕,等待帧尾
+            if (rx_index >= (2 + rx_expected_len))
+            {
+                rx_state = RX_STATE_VERIFY_TAIL;
+            }
+            break;
+            
+        case RX_STATE_VERIFY_TAIL:
+            if (rx_byte == 0x77)  // 帧尾正确
+            {
+                rx_buffer[rx_index] = 0x77;
+                visual_rx_complete_flag = 1;  // 置位接收完成标志
+            }
+            
+            // 重置状态机,准备接收下一帧
+            rx_state = RX_STATE_WAIT_HEADER;
+            rx_index = 0;
+            rx_expected_len = 0;
+            break;
+    }
+    
+    // 继续接收下一个字节
+    HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+//  @brief      获取接收缓冲区指针
+//  @return     uint8_t*: 接收缓冲区指针
+//  @param      void
+//  @note       供main.c调用,传递给Visual_Data_Unpack()解析
+//-------------------------------------------------------------------------------------------------------------------
+uint8_t* Visual_Get_RxBuffer(void)
+{
+    return rx_buffer;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+//  @brief      清除接收完成标志
+//  @return     void
+//  @param      void
+//  @note       main.c处理完数据后调用
+//-------------------------------------------------------------------------------------------------------------------
+void Visual_Clear_RxFlag(void)
+{
+    visual_rx_complete_flag = 0;
 }
