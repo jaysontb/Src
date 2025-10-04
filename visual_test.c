@@ -20,6 +20,7 @@
 #include "main.h"
 #include "visual_comm.h"
 #include "usart.h"
+#include "oled.h"  // 添加OLED头文件
 #include <stdio.h>
 #include <string.h>
 
@@ -48,31 +49,42 @@ uint8_t Visual_Wait_Response(uint32_t timeout_ms)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-//  @brief      打印坐标到串口(用于调试)
+//  @brief      在OLED上显示坐标
 //  @return     void
 //  @param      x, y: 坐标值
-//  @note       通过USART1或printf输出到调试终端
+//  @param      line: OLED行号(1-4)
+//  @note       在OLED上显示视觉识别的坐标
 //-------------------------------------------------------------------------------------------------------------------
-void Visual_Print_Coord(uint16_t x, uint16_t y)
+void Visual_Show_Coord_OLED(uint16_t x, uint16_t y, uint8_t line)
 {
-    char buffer[50];
-    sprintf(buffer, "[VISUAL] X=%d, Y=%d\r\n", x, y);
-    HAL_UART_Transmit(&huart1, (uint8_t*)buffer, strlen(buffer), 100);
+    char buffer[20];
+    
+    // 显示X坐标
+    OLED_ShowString(line, 1, "X:");
+    sprintf(buffer, "%d   ", x);  // 后面加空格清除旧数据
+    OLED_ShowString(line, 3, buffer);
+    
+    // 显示Y坐标
+    OLED_ShowString(line, 9, "Y:");
+    sprintf(buffer, "%d   ", y);
+    OLED_ShowString(line, 11, buffer);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
 //  @brief      基础通信测试
 //  @return     void
 //  @param      void
-//  @note       测试: 请求红色物料 → 接收坐标 → 打印结果
+//  @note       测试: 请求红色物料 → 接收坐标 → OLED显示结果
 //-------------------------------------------------------------------------------------------------------------------
 void Visual_Test_Basic(void)
 {
-    char msg[100];
+    // 清空OLED并显示标题
+    OLED_Clear();
+    OLED_ShowString(1, 1, "Vision Test");
+    HAL_Delay(500);
     
     // ========== Test 1: Material Recognition ==========
-    sprintf(msg, "\r\n=== Test 1: Red Material Recognition ===\r\n");
-    HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+    OLED_ShowString(2, 1, "Test1:Material");
     
     // Send request: identify red material
     Visual_Send_Material_Request(COLOR_RED);
@@ -84,60 +96,40 @@ void Visual_Test_Basic(void)
         Visual_Data_Unpack(Visual_Get_RxBuffer());
         Visual_Clear_RxFlag();
         
-        // Print result
-        sprintf(msg, "Red Material Coord: X=%d, Y=%d\r\n", VIS_RX.r_block_x, VIS_RX.r_block_y);
-        HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+        // Display result on OLED
+        Visual_Show_Coord_OLED(VIS_RX.r_block_x, VIS_RX.r_block_y, 3);
     }
     else
     {
-        sprintf(msg, "[ERROR] Receive timeout, check LubanCat connection\r\n");
-        HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+        OLED_ShowString(3, 1, "ERROR:Timeout");
     }
     
-    HAL_Delay(1000);
+    HAL_Delay(2000);
     
     // ========== Test 2: Platform Recognition ==========
-    sprintf(msg, "\r\n=== Test 2: Red Platform Recognition ===\r\n");
+    OLED_Clear();
+    OLED_ShowString(1, 1, "Test2:Platform");
     
     // 发送前先清除标志
     Visual_Clear_RxFlag();
     
-    HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
-    
     Visual_Send_Platform_Request(COLOR_RED);
     
-    // 增加调试信息
-    uint32_t start_time = HAL_GetTick();
     if (Visual_Wait_Response(1000))  // 增加超时时间到1秒
     {
-        uint32_t elapsed = HAL_GetTick() - start_time;
-        sprintf(msg, "[DEBUG] 接收成功,耗时%lums\r\n", elapsed);
-        HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
-        
-        // 打印接收到的原始数据
-        uint8_t* rxbuf = Visual_Get_RxBuffer();
-        sprintf(msg, "[DEBUG] RX Data: [0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X]\r\n",
-                rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3], rxbuf[4], rxbuf[5], rxbuf[6]);
-        HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
-        
-        Visual_Data_Unpack(rxbuf);
+        Visual_Data_Unpack(Visual_Get_RxBuffer());
         Visual_Clear_RxFlag();
         
-        sprintf(msg, "Red Platform Coord: X=%d, Y=%d\r\n", VIS_RX.platform_x, VIS_RX.platform_y);
-        HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+        // Display platform coordinates on OLED
+        Visual_Show_Coord_OLED(VIS_RX.platform_x, VIS_RX.platform_y, 2);
+        OLED_ShowString(3, 1, "Success!");
     }
     else
     {
-        sprintf(msg, "[ERROR]\r\n");
-        HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
-        
-        // 检查标志位状态
-        extern uint8_t visual_rx_complete_flag;
-        sprintf(msg, "[DEBUG] rx_flag=%d\r\n", visual_rx_complete_flag);
-        HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+        OLED_ShowString(2, 1, "ERROR:Timeout");
     }
     
-    HAL_Delay(1000);
+    HAL_Delay(2000);
     
     // ========== Test 3: QR Code Recognition ==========
     // sprintf(msg, "\r\n=== Test 3: QR Code Recognition ===\r\n");
@@ -171,33 +163,54 @@ void Visual_Test_Basic(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-//  @brief      循环测试(持续请求并打印坐标)
+//  @brief      循环测试(持续请求并OLED显示坐标)
 //  @return     void
 //  @param      void
-//  @note       用于验证通信稳定性
+//  @note       用于验证通信稳定性,OLED实时显示坐标
 //-------------------------------------------------------------------------------------------------------------------
 void Visual_Test_Loop(void)
 {
     static uint8_t test_count = 0;
-    char msg[100];
+    static uint8_t current_color = COLOR_RED;
     
     // Test different color materials in each loop
     uint8_t colors[] = {COLOR_RED, COLOR_GREEN, COLOR_BLUE};
-    uint8_t color = colors[test_count % 3];
+    static char color_names[3][3] = {"R:", "G:", "B:"};  // 改为非const
     
-    Visual_Send_Material_Request(color);
+    current_color = colors[test_count % 3];
     
-    if (Visual_Wait_Response(300))
+    // 显示当前测试信息
+    OLED_Clear();
+    OLED_ShowString(1, 1, "Loop Test");
+    OLED_ShowString(1, 11, color_names[test_count % 3]);
+    OLED_ShowNum(1, 14, test_count, 3);
+    
+    Visual_Send_Material_Request(current_color);
+    
+    if (Visual_Wait_Response(500))
     {
         Visual_Data_Unpack(Visual_Get_RxBuffer());
         Visual_Clear_RxFlag();
         
-        sprintf(msg, "[%d] Color%d: X=%d, Y=%d\r\n", test_count, color,
-                (color == COLOR_RED) ? VIS_RX.r_block_x :
-                (color == COLOR_GREEN) ? VIS_RX.g_block_x : VIS_RX.b_block_x,
-                (color == COLOR_RED) ? VIS_RX.r_block_y :
-                (color == COLOR_GREEN) ? VIS_RX.g_block_y : VIS_RX.b_block_y);
-        HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+        // 显示对应颜色的坐标
+        uint16_t x, y;
+        if (current_color == COLOR_RED) {
+            x = VIS_RX.r_block_x;
+            y = VIS_RX.r_block_y;
+        } else if (current_color == COLOR_GREEN) {
+            x = VIS_RX.g_block_x;
+            y = VIS_RX.g_block_y;
+        } else {
+            x = VIS_RX.b_block_x;
+            y = VIS_RX.b_block_y;
+        }
+        
+        Visual_Show_Coord_OLED(x, y, 2);
+        OLED_ShowString(3, 1, "OK");
+    }
+    else
+    {
+        OLED_ShowString(2, 1, "Timeout");
     }
     
     test_count++;
@@ -297,4 +310,86 @@ void Visual_Test_FullTask(void)
     
     sprintf(msg, "\r\n======== 任务完成! ========\r\n\r\n");
     HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+//  @brief      OLED实时显示完整视觉信息
+//  @return     void
+//  @param      void
+//  @note       在OLED上显示所有视觉识别结果,适合实时监控
+//-------------------------------------------------------------------------------------------------------------------
+void Visual_Display_All_Info(void)
+{
+    OLED_Clear();
+    
+    // 第1行:标题
+    OLED_ShowString(1, 1, "Vision Monitor");
+    
+    // 第2行:红色物料坐标
+    OLED_ShowString(2, 1, "R:");
+    if (VIS_RX.r_block_x > 0 && VIS_RX.r_block_y > 0) {
+        Visual_Show_Coord_OLED(VIS_RX.r_block_x, VIS_RX.r_block_y, 2);
+    } else {
+        OLED_ShowString(2, 3, "---");
+    }
+    
+    // 第3行:凸台坐标
+    OLED_ShowString(3, 1, "P:");
+    if (VIS_RX.platform_x > 0 && VIS_RX.platform_y > 0) {
+        Visual_Show_Coord_OLED(VIS_RX.platform_x, VIS_RX.platform_y, 3);
+    } else {
+        OLED_ShowString(3, 3, "---");
+    }
+    
+    // 第4行:凹槽坐标
+    OLED_ShowString(4, 1, "S:");
+    if (VIS_RX.slot_x > 0 && VIS_RX.slot_y > 0) {
+        Visual_Show_Coord_OLED(VIS_RX.slot_x, VIS_RX.slot_y, 4);
+    } else {
+        OLED_ShowString(4, 3, "---");
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+//  @brief      单次快速测试(推荐用于运动控制集成)
+//  @return     uint8_t: 1-成功, 0-失败
+//  @param      color: 颜色码 (COLOR_RED/GREEN/BLUE)
+//  @param      line: OLED显示行号
+//  @note       发送请求→等待→显示,一气呵成,适合在主循环中调用
+//-------------------------------------------------------------------------------------------------------------------
+uint8_t Visual_Quick_Test(uint8_t color, uint8_t line)
+{
+    static char color_str[3][2] = {"R", "G", "B"};  // 改为非const
+    
+    // 显示请求状态
+    OLED_ShowString(line, 1, color_str[color-1]);
+    OLED_ShowString(line, 2, ":Wait..");
+    
+    // 发送请求
+    Visual_Send_Material_Request(color);
+    
+    // 等待响应
+    if (Visual_Wait_Response(500))
+    {
+        Visual_Data_Unpack(Visual_Get_RxBuffer());
+        Visual_Clear_RxFlag();
+        
+        // 显示坐标
+        uint16_t x, y;
+        if (color == COLOR_RED) {
+            x = VIS_RX.r_block_x; y = VIS_RX.r_block_y;
+        } else if (color == COLOR_GREEN) {
+            x = VIS_RX.g_block_x; y = VIS_RX.g_block_y;
+        } else {
+            x = VIS_RX.b_block_x; y = VIS_RX.b_block_y;
+        }
+        
+        Visual_Show_Coord_OLED(x, y, line);
+        return 1;  // 成功
+    }
+    else
+    {
+        OLED_ShowString(line, 2, ":Error");
+        return 0;  // 失败
+    }
 }

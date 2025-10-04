@@ -1,618 +1,458 @@
+/**
+  ******************************************************************************
+  * @file    motor.c
+  * @brief   麦克纳姆轮电机控制 (位置模式简化版)
+  * @date    2025-10-04
+  ******************************************************************************
+  * 设计目标:
+  *  - 删除 MPU6050 / 里程计依赖, 仅保留位置模式动作
+  *  - 结合麦克纳姆运动学计算四轮脉冲
+  *  - 电机 2、4 反向安装, 下发命令时需翻转方向
+  ******************************************************************************
+  */
+
 #include "motor.h"
 #include "Emm_V5.h"
-#include "inv_mpu.h"
+#include "main.h"
 #include <math.h>
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
 
-#define WHEEL_RADIUS_MM     48.0f     // 轮半径
+/* ===================== 机械参数 ===================== */
+#define PI_F                    3.14159265f
+#define WHEEL_RADIUS_MM         48.0f      // 麦克纳姆轮半径 (mm)
+#define WHEEL_BASE_MM           300.0f     // 左右轮中心距 (mm)
+#define WHEEL_TRACK_MM          300.0f     // 前后轮中心距 (mm)
 
-//电机地址
-#define MOTOR_FL  1
-#define MOTOR_FR  2
-#define MOTOR_RL  3
-#define MOTOR_RR  4
+/* ===================== 电机地址 ===================== */
+#define MOTOR_FL                1U         // Front Left  左前
+#define MOTOR_FR                2U         // Front Right 右前 (倒装)
+#define MOTOR_RL                3U         // Rear  Left  左后
+#define MOTOR_RR                4U         // Rear  Right 右后 (倒装)
 
-// 轨迹模式参数（需调）
-#define ACC_RPM_S  800
-#define DEC_RPM_S  800
-#define MAX_RPM    200
-#define EMM_DEFAULT_ACC   50U
+/* ===================== 控制参数 ===================== */
+#define DEFAULT_SPEED_RPM       40U
+#define DEFAULT_ACCEL           200U
+#define MAX_SPEED_RPM           120U
+#define EXTRA_DELAY_MS          100U       // 动作结束附加等待(使用反馈后可缩短)
+#define POSITION_POLL_TIMEOUT   10000U     // 位置等待超时 10s
+#define POSITION_POLL_INTERVAL  20U        // 位置查询间隔 20ms
 
-// 累计角度（度，正数取绝对累加，方向单独用dir）
-//static float acc_deg_FL = 0, acc_deg_FR = 0, acc_deg_RL = 0, acc_deg_RR = 0;
+// 电机2、4方向翻转 (输入: 1=正转, 0=反转)
+#define FIX_DIR_MOTOR_2(dir)    ((dir) ? 0U : 1U)
+#define FIX_DIR_MOTOR_4(dir)    ((dir) ? 0U : 1U)
 
-// 航向角控制器
-static HeadingController_t heading_ctrl = {
-    .target_yaw_deg = 0.0f,
-    .current_yaw_deg = 0.0f,
-    .yaw_error_deg = 0.0f,
-    .kp_yaw = 2.0f,              // P控制器增益，需要调参
-    .max_correction_rpm = 50.0f,  // 最大修正转速
-    .enable_heading_hold = false
-};
+/* ===================== 速度配置 ===================== */
+/**
+ * @brief 运动速度档位枚举
+ * @details 根据不同操作场景选择合适的运动速度
+ */
+typedef enum {
+	SPEED_PRECISE = 0,   /**< 精确模式: 30 RPM (取料/放料/对位) */
+	SPEED_NORMAL  = 1,   /**< 正常模式: 50 RPM (载货移动) */
+	SPEED_FAST    = 2,   /**< 快速模式: 80 RPM (空载移动/寻位) */
+} SpeedProfile_t;
 
-bool Motor_readangle(uint8_t motor_adr , float *angle)
+static const uint16_t SPEED_PROFILES[3] = {30, 50, 80}; /**< 各档位对应的RPM值 */
+static SpeedProfile_t g_current_speed_profile = SPEED_NORMAL; /**< 当前速度档位 */
+
+/* ===================== 静态工具函数 ===================== */
+/**
+ * @brief 内部工具函数声明
+ * @note 这些函数不对外暴露,仅供内部使用
+ */
+static uint32_t distance_to_cmd_ticks(float distance_mm);     /**< 距离转Emm_V5命令参数 */
+static uint32_t rotation_to_cmd_ticks(float angle_deg);       /**< 角度转Emm_V5命令参数 */
+static uint32_t sanitize_speed(uint32_t rpm);                 /**< 速度值合法性检查 */
+// static void     issue_position_commands(const uint8_t dirs[4], const uint32_t pulses[4], uint32_t speed_rpm, uint8_t accel); /**< 下发位置控制命令(未使用) */
+static void     wait_estimated_motion(float distance_mm, uint32_t speed_rpm); /**< UART反馈等待 */
+// static bool     wait_motion_complete_with_feedback(uint32_t timeout_ms); /**< 位置反馈等待(未使用) */
+//static bool     check_motor_arrived(uint8_t addr);            /**< 检查单个电机到位 */
+
+/* ===================== 对外接口 ===================== */
+
+/**
+ * @brief 电机模块初始化
+ * @note 主要用于延时等待系统稳定,可以添加电机使能等操作
+ */
+void Motor_Init(void)
 {
-    if (angle == NULL)
-    {
-        return false;
-    }
-
-    // 发送读取实时位置命令
-    Emm_V5_Read_Sys_Params(motor_adr, S_CPOS);
-
-    // 等待返回数据 (阻塞直到收到帧)
-    while (rxFrameFlag == false)
-    {
-        // 简单延时，避免空转
-        HAL_Delay(1);
-    }
-    rxFrameFlag = false;
-
-    // 校验地址、功能码和长度
-    if (rxCmd[0] == motor_adr && rxCmd[1] == 0x36 && rxCount == 8)
-    {
-        uint32_t pos;
-
-        pos = ((uint32_t)rxCmd[3] << 24) |
-              ((uint32_t)rxCmd[4] << 16) |
-              ((uint32_t)rxCmd[5] << 8)  |
-              ((uint32_t)rxCmd[6]);
-
-        *angle = (float)pos * 0.1f;
-        if (rxCmd[2] != 0U)
-        {
-            *angle = -*angle;
-        }
-        return true;
-    }
-
-    return false;
+	HAL_Delay(100);
+	// 如需: 在此加入驱动器细分设置/回零/使能等操作
 }
 
-// 距离(mm) -> 电机角度(度)
-// static float distance_mm_to_motor_deg(float mm)
+/**
+ * @brief 前进/后退运动 (位置模式)
+ * @param distance_mm 移动距离(mm), 正值前进,负值后退
+ * @param speed_rpm 速度(RPM), 0表示使用默认速度
+ * @note 使用麦克纳姆轮运动学,四个轮子同向同速旋转
+ * @attention 距离精度受轮子半径等机械参数影响
+ */
+void Motor_Move_Forward(float distance_mm, uint16_t speed_rpm)
+{
+	// 如果用户指定速度,使用指定值;否则使用当前速度配置档位
+	uint32_t speed = sanitize_speed((speed_rpm == 0U) ? SPEED_PROFILES[g_current_speed_profile] : speed_rpm);
+	uint32_t pulses = distance_to_cmd_ticks(distance_mm);
+	uint8_t dir = (distance_mm >= 0.0f) ? 0U : 1U;  // 1=后退, 0=前进
+
+	// 按照原来的方式: 依次发送4个电机命令
+	Emm_V5_Pos_Control(MOTOR_FL, dir, speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+	HAL_Delay(10);
+	
+	Emm_V5_Pos_Control(MOTOR_FR, FIX_DIR_MOTOR_2(dir), speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+	HAL_Delay(10);
+	
+	Emm_V5_Pos_Control(MOTOR_RL, dir, speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+	HAL_Delay(10);
+	
+	Emm_V5_Pos_Control(MOTOR_RR, FIX_DIR_MOTOR_4(dir), speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+	HAL_Delay(10);
+	
+	// 发送同步运动命令
+	Emm_V5_Synchronous_motion(0U);
+	HAL_Delay(10);
+	
+	// 简单延时等待(按照原来的方式)
+	wait_estimated_motion(fabsf(distance_mm), speed);
+}
+
+/**
+ * @brief 左右平移运动 (位置模式)
+ * @param distance_mm 移动距离(mm), 正值右移,负值左移
+ * @param speed_rpm 速度(RPM), 0表示使用默认速度
+ * @note 使用麦克纳姆轮运动学,左前/右后轮与右前/左后轮反向旋转
+ * @attention 比赛场地边界检测很重要,防止越界
+ */
+void Motor_Move_Lateral(float distance_mm, uint16_t speed_rpm)
+{
+	// 如果用户指定速度,使用指定值;否则使用当前速度配置档位
+	uint32_t speed = sanitize_speed((speed_rpm == 0U) ? SPEED_PROFILES[g_current_speed_profile] : speed_rpm);
+	uint32_t pulses = distance_to_cmd_ticks(distance_mm);
+
+	if (distance_mm >= 0.0f)
+	{
+		// 向右平移 (车体 +X): FL/RR 正转, FR/RL 反转
+		Emm_V5_Pos_Control(MOTOR_FL, 1U, speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_FR, FIX_DIR_MOTOR_2(0U), speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_RL, 0U, speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_RR, FIX_DIR_MOTOR_4(1U), speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+	}
+	else
+	{
+		// 向左平移 (车体 -X)
+		Emm_V5_Pos_Control(MOTOR_FL, 0U, speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_FR, FIX_DIR_MOTOR_2(1U), speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_RL, 1U, speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_RR, FIX_DIR_MOTOR_4(0U), speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+	}
+
+	Emm_V5_Synchronous_motion(0U);
+	HAL_Delay(10);
+	
+	wait_estimated_motion(fabsf(distance_mm), speed);
+}
+
+/**
+ * @brief 原地旋转运动 (位置模式)
+ * @param angle_deg 旋转角度(度), 正值逆时针,负值顺时针
+ * @param speed_rpm 速度(RPM), 0表示使用默认速度
+ * @note 左边轮子与右边轮子反向旋转,旋转半径由轮距决定
+ * @attention 角度精度受轮距测量精度影响
+ */
+void Motor_Move_Rotate(float angle_deg, uint16_t speed_rpm)
+{
+	// 如果用户指定速度,使用指定值;否则使用当前速度配置档位
+	uint32_t speed = sanitize_speed((speed_rpm == 0U) ? SPEED_PROFILES[g_current_speed_profile] : speed_rpm);
+	uint32_t pulses = rotation_to_cmd_ticks(angle_deg);
+
+	if (angle_deg >= 0.0f)
+	{
+		// 逆时针 (车体 +Yaw): 左轮正转, 右轮反转
+		Emm_V5_Pos_Control(MOTOR_FL, 1U, speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_FR, FIX_DIR_MOTOR_2(0U), speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_RL, 1U, speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_RR, FIX_DIR_MOTOR_4(0U), speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+	}
+	else
+	{
+		// 顺时针 (车体 -Yaw)
+		Emm_V5_Pos_Control(MOTOR_FL, 0U, speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_FR, FIX_DIR_MOTOR_2(1U), speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_RL, 0U, speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+		Emm_V5_Pos_Control(MOTOR_RR, FIX_DIR_MOTOR_4(1U), speed, DEFAULT_ACCEL, pulses, 0U, 1U);
+		HAL_Delay(10);
+	}
+
+	Emm_V5_Synchronous_motion(0U);
+	HAL_Delay(10);
+	
+	float angle_rad = fabsf(angle_deg) * PI_F / 180.0f;
+	float radius = sqrtf((WHEEL_BASE_MM * 0.5f) * (WHEEL_BASE_MM * 0.5f) +
+						 (WHEEL_TRACK_MM * 0.5f) * (WHEEL_TRACK_MM * 0.5f));
+	float arc = radius * angle_rad;
+	wait_estimated_motion(arc, speed);
+}
+
+/**
+ * @brief 立即停止所有电机
+ * @note 发送广播停止命令,所有电机立即停止
+ */
+void Motor_Stop_All(void)
+{
+	Emm_V5_Stop_Now(0U, 1U); // 广播 + 立即停止
+	HAL_Delay(50);
+}
+
+/**
+ * @brief 紧急停止 (与Motor_Stop_All相同)
+ */
+void Motor_Emergency_Stop(void)
+{
+	Motor_Stop_All();
+}
+
+/**
+ * @brief 设置运动速度档位
+ * @param profile 速度档位: 0=精确, 1=正常, 2=快速
+ * @note 影响后续所有运动函数的速度选择
+ */
+void Motor_Set_Speed_Profile(uint8_t profile)
+{
+	if (profile <= SPEED_FAST)
+	{
+		g_current_speed_profile = (SpeedProfile_t)profile;
+	}
+}
+
+/* ===================== 工具函数实现 ===================== */
+
+/**
+ * @brief 将线性移动距离转换为Emm_V5位置命令参数
+ * @param distance_mm 车体需要移动的距离(mm)
+ * @return Emm_V5命令的脉冲参数值
+ * 
+ * @details 计算过程:
+ * 1. 计算轮子需要转动的圈数: turns = distance_mm / (2π × radius)
+ * 2. 转换为角度: angle_deg = turns × 360°
+ * 3. 转换为Emm_V5格式: ticks = angle_deg × 10 (0.1°单位)
+ * 
+ * @note Emm_V5协议规定角度精度为0.1°,所以需要乘以10
+ * @attention 轮子半径误差会直接影响距离精度
+ */
+static uint32_t distance_to_cmd_ticks(float distance_mm)
+{
+	// Emm_V5 位置命令的 "clk" 参数以 0.1° 为单位(10 tick = 1°)。
+	// 这里根据车体行进距离折算轮子旋转角度, 最终返回需要写入命令的数据位。
+	float circumference = 2.0f * PI_F * WHEEL_RADIUS_MM;
+	float turns = (circumference > 0.0f) ? fabsf(distance_mm) / circumference : 0.0f;
+	float degree = turns * 360.0f;
+	return (uint32_t)lrintf(degree * 10.0f);
+}
+
+/**
+ * @brief 将旋转角度转换为Emm_V5位置命令参数
+ * @param angle_deg 车体需要旋转的角度(度)
+ * @return Emm_V5命令的脉冲参数值
+ * 
+ * @details 计算过程:
+ * 1. 计算旋转半径: radius = sqrt((wheel_base/2)² + (wheel_track/2)²)
+ * 2. 计算轮子移动弧长: arc = radius × angle_rad
+ * 3. 复用距离转换函数计算脉冲数
+ * 
+ * @note 原地旋转时轮子走的是圆弧路径,不是直线
+ */
+static uint32_t rotation_to_cmd_ticks(float angle_deg)
+{
+	float angle_rad = fabsf(angle_deg) * PI_F / 180.0f;
+	float radius = sqrtf((WHEEL_BASE_MM * 0.5f) * (WHEEL_BASE_MM * 0.5f) +
+					 (WHEEL_TRACK_MM * 0.5f) * (WHEEL_TRACK_MM * 0.5f));
+	float arc = radius * angle_rad;
+	return distance_to_cmd_ticks(arc);
+}
+
+/**
+ * @brief 速度值合法性检查和限制
+ * @param rpm 输入的RPM值
+ * @return 经过检查的速度值
+ * @note 防止速度过高导致电机丢步或过载
+ */
+static uint32_t sanitize_speed(uint32_t rpm)
+{
+	if (rpm == 0U) return DEFAULT_SPEED_RPM;
+	if (rpm > MAX_SPEED_RPM) return MAX_SPEED_RPM;
+	return rpm;
+}
+
+/**
+ * @brief 下发位置控制命令到四个电机 (未使用,已注释)
+ * @param dirs 四个电机的方向数组 [FL, FR, RL, RR]
+ * @param pulses 四个电机的脉冲数数组 [FL, FR, RL, RR]
+ * @param speed_rpm 运动速度(RPM)
+ * @param accel 加速度
+ * 
+ * @details Emm_V5_Pos_Control函数参数说明:
+ * - addr: 电机地址(1-4)
+ * - dir: 方向(0=反转, 1=正转)
+ * - vel: 速度(RPM)
+ * - acc: 加速度
+ * - clk: 位置参数(0.1°单位)
+ * - raF: 相对/绝对标志(0=相对, 1=绝对)
+ * - snF: 多机同步标志(0=立即执行, 1=等待同步命令)
+ * 
+ * @note 使用同步运动命令让四个电机同时启动
+ */
+// static void issue_position_commands(const uint8_t dirs[4], const uint32_t pulses[4], uint32_t speed_rpm, uint8_t accel)
 // {
-//     float n_rev_wheel = mm / (2.0f * 3.1415926f * WHEEL_RADIUS_MM);
-//     float n_rev_motor = n_rev_wheel * 1.0f;
-//     return n_rev_motor * 360.0f;
+// 	// snF=1U: 启用多机同步,电机收到命令后不立即执行,等待同步信号
+// 	Emm_V5_Pos_Control(MOTOR_FL, dirs[0], speed_rpm, accel, pulses[0], 0U, 1U);
+// 	Emm_V5_Pos_Control(MOTOR_FR, dirs[1], speed_rpm, accel, pulses[1], 0U, 1U);
+// 	Emm_V5_Pos_Control(MOTOR_RL, dirs[2], speed_rpm, accel, pulses[2], 0U, 1U);
+// 	Emm_V5_Pos_Control(MOTOR_RR, dirs[3], speed_rpm, accel, pulses[3], 0U, 1U);
+// 	
+// 	// 发送同步运动命令,让所有电机同时启动
+// 	Emm_V5_Synchronous_motion(0U);
 // }
 
-// 电机角度(度) -> 距离(mm)
-static float motor_deg_to_distance_mm(float deg)
+/**
+ * @brief 等待电机运动完成(通过主动查询状态)
+ * @param distance_mm 移动距离(mm) - 用于计算超时时间
+ * @param speed_rpm 运动速度(RPM) - 用于计算超时时间
+ * 
+ * @details 主动查询电机状态标志位:
+ * - 周期性发送查询命令 Emm_V5_Read_Sys_Params(addr, S_FLAG)
+ * - 解析返回数据: rxCmd[4] bit0=到位标志
+ * - 支持超时保护,防止无限等待
+ * 
+ * @note 电机驱动器不会主动发送完成信号,必须主动查询
+ */
+static void wait_estimated_motion(float distance_mm, uint32_t speed_rpm)
 {
-    float n_rev_motor = deg / 360.0f;
-    float n_rev_wheel = n_rev_motor * 1.0f;
-    return n_rev_wheel * (2.0f * 3.1415926f * WHEEL_RADIUS_MM);
+	// 计算超时时间: 基于距离和速度估算,留2倍余量
+	// 运动时间(s) = 距离(mm) / (速度(RPM) × 周长(mm) / 60)
+	float circumference = 2.0f * PI_F * WHEEL_RADIUS_MM;
+	float estimated_time_s = fabsf(distance_mm) / (speed_rpm * circumference / 60.0f);
+	uint32_t timeout_ms = (uint32_t)(estimated_time_s * 2000.0f) + 1000U;  // 2倍余量 + 1秒保底
+	
+	uint32_t start_tick = HAL_GetTick();
+	uint32_t last_query_tick = 0;
+	const uint32_t query_interval = 50;  // 查询间隔50ms
+	
+	// 轮询等待,直到任意一个电机到位或超时
+	while ((HAL_GetTick() - start_tick) < timeout_ms)
+	{
+		// 限制查询频率,避免总线拥塞
+		if ((HAL_GetTick() - last_query_tick) >= query_interval)
+		{
+			last_query_tick = HAL_GetTick();
+			
+			// 查询电机1(左前轮)的状态标志位
+			// 因为是同步运动,所以只需查询一个电机即可
+			Emm_V5_Read_Sys_Params(MOTOR_FL, S_FLAG);
+			
+			// 等待UART接收完成
+			HAL_Delay(10);
+			
+			// 检查返回数据: rxCmd[0]=地址, rxCmd[1]=0xFD, rxCmd[2]=0x3A(读取命令), rxCmd[3]=参数类型, rxCmd[4]=状态标志
+			// rxCmd[4] bit0=到位标志: 1=到位, 0=未到位
+			if (rxFrameFlag && rxCmd[1] == 0xFD && rxCmd[2] == 0x3A)
+			{
+				if (rxCmd[4] & 0x01)  // bit0 置位表示到位
+				{
+					rxFrameFlag = false;
+					return;  // 电机已到位,退出等待
+				}
+				rxFrameFlag = false;  // 清除标志,继续等待
+			}
+		}
+		
+		// 短暂休眠,降低CPU占用
+		HAL_Delay(5);
+	}
+	
+	// 超时仍未到位,清除标志并返回(可能堵转或参数错误)
+	rxFrameFlag = false;
 }
 
-// 读取所有电机位置
-static bool Motor_ReadAllPositions(float positions[4])
-{
-    return (Motor_readangle(MOTOR_FL, &positions[0]) &&
-            Motor_readangle(MOTOR_FR, &positions[1]) &&
-            Motor_readangle(MOTOR_RL, &positions[2]) &&
-            Motor_readangle(MOTOR_RR, &positions[3]));
-}
-
-// 发送速度指令到所有电机
-static void Motor_SetAllVelocities(float wheel_speeds[4])
-{
-    float speed_fl = wheel_speeds[0];
-    float speed_fr = wheel_speeds[1];
-    float speed_rl = wheel_speeds[2];
-    float speed_rr = wheel_speeds[3];
-
-    // 限制范围
-    if (speed_fl > MAX_RPM) speed_fl = MAX_RPM;
-    if (speed_fl < -MAX_RPM) speed_fl = -MAX_RPM;
-    if (speed_fr > MAX_RPM) speed_fr = MAX_RPM;
-    if (speed_fr < -MAX_RPM) speed_fr = -MAX_RPM;
-    if (speed_rl > MAX_RPM) speed_rl = MAX_RPM;
-    if (speed_rl < -MAX_RPM) speed_rl = -MAX_RPM;
-    if (speed_rr > MAX_RPM) speed_rr = MAX_RPM;
-    if (speed_rr < -MAX_RPM) speed_rr = -MAX_RPM;
-
-    uint8_t dir_fl = (speed_fl >= 0.0f) ? 0 : 1;
-    uint8_t dir_fr = (speed_fr >= 0.0f) ? 0 : 1;
-    uint8_t dir_rl = (speed_rl >= 0.0f) ? 0 : 1;
-    uint8_t dir_rr = (speed_rr >= 0.0f) ? 0 : 1;
-
-    uint16_t rpm_fl = (uint16_t)(fabsf(speed_fl) + 0.5f);
-    uint16_t rpm_fr = (uint16_t)(fabsf(speed_fr) + 0.5f);
-    uint16_t rpm_rl = (uint16_t)(fabsf(speed_rl) + 0.5f);
-    uint16_t rpm_rr = (uint16_t)(fabsf(speed_rr) + 0.5f);
-
-    Emm_V5_Vel_Control(MOTOR_FL, dir_fl, rpm_fl, EMM_DEFAULT_ACC, false);
-    Emm_V5_Vel_Control(MOTOR_FR, dir_fr, rpm_fr, EMM_DEFAULT_ACC, false);
-    Emm_V5_Vel_Control(MOTOR_RL, dir_rl, rpm_rl, EMM_DEFAULT_ACC, false);
-    Emm_V5_Vel_Control(MOTOR_RR, dir_rr, rpm_rr, EMM_DEFAULT_ACC, false);
-}
-
-// 停止所有电机
-static void Motor_StopAll(void)
-{
-    Emm_V5_Stop_Now(MOTOR_FL, false);
-    Emm_V5_Stop_Now(MOTOR_FR, false);
-    Emm_V5_Stop_Now(MOTOR_RL, false);
-    Emm_V5_Stop_Now(MOTOR_RR, false);
-}
-
-// /**
-//  * @brief 兼容接口：前进/后退运动（使用当前航向角）
-//  * @param d_mm 移动距离(mm)
-//  */
-// void Move_Forward_Distance(float d_mm)
+/**
+ * @brief 检查单个电机是否到位
+ * @param addr 电机地址
+ * @return true=到位, false=未到位或读取失败
+ * @note 方案三: 返回false强制使用延时等待,不读取反馈
+ */
+// static bool check_motor_arrived(uint8_t addr)
 // {
-//     float roll, pitch, current_yaw = 0.0f;
-//   
-//     // 获取当前航向角
-//     if(MPU6050_DMP_Get_Data(&pitch, &roll, &current_yaw) != 0)
-//     {
-//         current_yaw = 0.0f; // 如果读取失败，使用0度
-//     }
-//    
-//     Move_Forward_Distance_Stable(d_mm, current_yaw);
-// }
-//
-// /**
-//  * @brief 兼容接口：左右平移运动（使用当前航向角）
-//  * @param d_mm 移动距离(mm)
-//  */
-// void Move_Lateral_Distance(float d_mm)
-// {
-//     float roll, pitch, current_yaw = 0.0f;
-//    
-//     // 获取当前航向角
-//     if(MPU6050_DMP_Get_Data(&pitch, &roll, &current_yaw) != 0)
-//     {
-//         current_yaw = 0.0f; // 如果读取失败，使用0度
-//     }
-//    
-//     Move_Lateral_Distance_Stable(d_mm, current_yaw);
+// 	// 方案三: 直接返回false,强制wait函数使用几何计算的延时
+// 	// 优点: 简单可靠,不依赖UART协议解析
+// 	// 缺点: 无法检测堵转/失步,需要延时估算准确
+// 	(void)addr; // 避免未使用参数警告
+// 	return false; // 强制使用延时等待
 // }
 
-
-bool Motor_Odom_Update(Odom2D_t *odom)
-{
-    if(!odom) return false;
-    float pos[4];
-    if(!Motor_ReadAllPositions(pos)) return false;
-
-    float r,p,yaw=0.0f;
-    bool imu_ok = (mpu_dmp_get_data(&p,&r,&yaw)==0);
-    if(imu_ok) odom->yaw_deg = yaw; // 保留旧 yaw 如果读取失败
-
-    if(!odom->initialized) {
-        for(int i=0;i<4;i++) odom->last_deg[i] = pos[i];
-        odom->initialized = true;
-        return true;
-    }
-
-    // 计算每个轮的弧度增量
-    float d_rad[4];
-    for(int i=0;i<4;i++) {
-        d_rad[i] = (pos[i] - odom->last_deg[i]) * (3.1415926f/180.0f);
-        odom->last_deg[i] = pos[i];
-    }
-
-    float dsFL = WHEEL_RADIUS_MM * d_rad[0];
-    float dsFR = WHEEL_RADIUS_MM * d_rad[1];
-    float dsRL = WHEEL_RADIUS_MM * d_rad[2];
-    float dsRR = WHEEL_RADIUS_MM * d_rad[3];
-
-    float dX_body = 0.25f * (dsFL + dsFR + dsRL + dsRR);
-    float dY_body = 0.25f * (-dsFL + dsFR + dsRL - dsRR);
-
-    float yaw_rad = odom->yaw_deg * (3.1415926f/180.0f);
-    float cy = cosf(yaw_rad), sy = sinf(yaw_rad);
-    float dX_world =  cy * dX_body - sy * dY_body;
-    float dY_world =  sy * dX_body + cy * dY_body;
-
-    odom->x_mm += dX_world;
-    odom->y_mm += dY_world;
-    return true;
-}
-
-void Motor_Odom_Get(const Odom2D_t *odom, float *x_mm, float *y_mm, float *yaw_deg)
-{
-    if(!odom) return;
-    if(x_mm) *x_mm = odom->x_mm;
-    if(y_mm) *y_mm = odom->y_mm;
-    if(yaw_deg) *yaw_deg = odom->yaw_deg;
-}
-
-// 航向角稳定控制函数实现
-
 /**
- * @brief 设置目标航向角
+ * @brief 等待所有电机到位 (未使用,已注释)
+ * @param timeout_ms 超时时间(毫秒)
+ * @return 始终返回false
+ * @note 此函数已被 wait_estimated_motion 中的 UART 反馈等待替代
  */
-void Motor_SetHeadingTarget(float target_yaw_deg)
-{
-    heading_ctrl.target_yaw_deg = target_yaw_deg;
-}
+// static bool wait_motion_complete_with_feedback(uint32_t timeout_ms)
+// {
+// 	(void)timeout_ms; // 避免未使用参数警告
+// 	return false;
+// }
 
+/* ===================== 兼容封装 ===================== */
 /**
- * @brief 启用/禁用航向保持
- */
-void Motor_EnableHeadingHold(bool enable)
-{
-    heading_ctrl.enable_heading_hold = enable;
-}
-
-/**
- * @brief 角度标准化到[-180, 180]度范围
- */
-static float normalize_angle(float angle_deg)
-{
-    while (angle_deg > 180.0f) angle_deg -= 360.0f;
-    while (angle_deg < -180.0f) angle_deg += 360.0f;
-    return angle_deg;
-}
-
-/**
- * @brief 更新航向角控制器
- * @param current_yaw_deg 当前航向角(度)
- * @return true: 控制器正常工作, false: 未启用或出错
- */
-bool Motor_UpdateHeadingController(float current_yaw_deg)
-{
-    if (!heading_ctrl.enable_heading_hold) {
-        return false;
-    }
-    
-    heading_ctrl.current_yaw_deg = current_yaw_deg;
-    
-    // 计算航向角误差，考虑角度环绕
-    heading_ctrl.yaw_error_deg = normalize_angle(
-        heading_ctrl.target_yaw_deg - heading_ctrl.current_yaw_deg
-    );
-    
-    return true;
-}
-
-/**
- * @brief 计算航向角修正速度
- * @return 修正转速(RPM), 正值表示向右修正，负值表示向左修正
- */
-float calculate_yaw_correction_rpm(void)
-{
-    if (!heading_ctrl.enable_heading_hold) {
-        return 0.0f;
-    }
-    
-    // P控制器
-    float correction_rpm = heading_ctrl.kp_yaw * heading_ctrl.yaw_error_deg;
-    
-    // 限制修正范围
-    if (correction_rpm > heading_ctrl.max_correction_rpm) {
-        correction_rpm = heading_ctrl.max_correction_rpm;
-    } else if (correction_rpm < -heading_ctrl.max_correction_rpm) {
-        correction_rpm = -heading_ctrl.max_correction_rpm;
-    }
-    
-    return correction_rpm;
-}
-
-/**
- * @brief [周期调用] 根据当前航向修正前进速度
- * @param base_speed_rpm 基础前进速度(RPM), >0前进, <0后退
- * @param wheel_speeds   (输出) 计算出的四个轮子的目标速度数组
- */
-void Motor_Yaw_Corrected_Forward(float base_speed_rpm, float wheel_speeds[4])
-{
-    float correction_rpm = 0.0f;
-    float current_yaw = 0.0f;
-    float roll, pitch;
-
-    // 1. 获取当前航向角
-    if (mpu_dmp_get_data(&pitch, &roll, &current_yaw) == 0) {
-        // 2. 更新航向控制器，计算误差
-        Motor_UpdateHeadingController(current_yaw);
-        // 3. 根据误差计算修正速度
-        correction_rpm = calculate_yaw_correction_rpm();
-    }
-    // 如果IMU读取失败，则不进行修正，correction_rpm为0
-
-    // 4. 计算最终轮速 (前进时，左右轮差速实现转向)
-    //    左轮需要减速(或反向加速)来实现右转, 右轮反之
-    wheel_speeds[0] = base_speed_rpm - correction_rpm; // FL
-    wheel_speeds[1] = base_speed_rpm + correction_rpm; // FR
-    wheel_speeds[2] = base_speed_rpm - correction_rpm; // RL
-    wheel_speeds[3] = base_speed_rpm + correction_rpm; // RR
-}
-
-/**
- * @brief [周期调用] 根据当前航向修正平移速度
- * @param base_speed_rpm 基础平移速度(RPM), >0向左, <0向右
- * @param wheel_speeds   (输出) 计算出的四个轮子的目标速度数组
- */
-void Motor_Yaw_Corrected_Strafe(float base_speed_rpm, float wheel_speeds[4])
-{
-    float correction_rpm = 0.0f;
-    float current_yaw = 0.0f;
-    float roll, pitch;
-
-    // 1. 获取当前航向角并计算修正量
-    if (mpu_dmp_get_data(&pitch, &roll, &current_yaw) == 0) {
-        Motor_UpdateHeadingController(current_yaw);
-        correction_rpm = calculate_yaw_correction_rpm();
-    }
-
-    // 2. 定义基础轮速方向 (向左平移时: FL-, FR+, RL+, RR-)
-    float base_fl = -base_speed_rpm;
-    float base_fr =  base_speed_rpm;
-    float base_rl =  base_speed_rpm;
-    float base_rr = -base_speed_rpm;
-
-    // 3. 计算最终轮速 (平移时，所有轮子同向增减速实现转向)
-    //    为了向右转(correction_rpm > 0), 所有轮子都需要增加一个“右转”的速度分量
-    //    右转时轮速: FL+, FR-, RL+, RR-
-    wheel_speeds[0] = base_fl + correction_rpm; // FL
-    wheel_speeds[1] = base_fr - correction_rpm; // FR
-    wheel_speeds[2] = base_rl + correction_rpm; // RL
-    wheel_speeds[3] = base_rr - correction_rpm; // RR
-}
-
-/**
- * @brief 带航向角稳定的前进/后退运动 (速度模式+位置反馈)
- * @param d_mm 移动距离(mm), >0前进, <0后退
- * @param target_yaw_deg 目标航向角(度)
- * @return true: 运动完成, false: 出错或被打断
+ * @brief 兼容旧接口: 前进/后退运动 (忽略航向参数)
+ * @param d_mm 移动距离(mm), 正值前进,负值后退
+ * @param target_yaw_deg 目标航向角(度), 此版本忽略
+ * @return 始终返回true
+ * @note 为保持与旧代码兼容,忽略航向保持功能
  */
 bool Move_Forward_Distance_Stable(float d_mm, float target_yaw_deg)
 {
-    float start_positions[4], current_positions[4];
-    float target_distance = fabsf(d_mm);
-    float base_speed_rpm = 120.0f; // 基础速度
-    float wheel_speeds[4];
-    int8_t direction = (d_mm >= 0) ? 1 : -1;
-    
-    // 1. 读取起始位置
-    if(!Motor_ReadAllPositions(start_positions))
-    {
-        return false; // 读取失败
-    }
-    
-    // 2. 设置目标航向角并启用航向保持
-    Motor_SetHeadingTarget(target_yaw_deg);
-    Motor_EnableHeadingHold(true);
-    
-    // 3. 主控制循环
-    while(1)
-    {
-        // 读取当前位置
-        if(!Motor_ReadAllPositions(current_positions))
-        {
-            Motor_StopAll();
-            Motor_EnableHeadingHold(false);
-            return false;
-        }
-        
-        // 计算平均行驶距离
-        float distances_moved[4];
-        float total_distance = 0;
-        
-        for(int i = 0; i < 4; i++)
-        {
-            distances_moved[i] = motor_deg_to_distance_mm(
-                fabsf(current_positions[i] - start_positions[i])
-            );
-            total_distance += distances_moved[i];
-        }
-        
-        float avg_distance_moved = total_distance / 4.0f;
-        
-        // 检查是否到达目标
-        if(avg_distance_moved >= target_distance)
-        {
-            Motor_StopAll();
-            Motor_EnableHeadingHold(false);
-            return true;
-        }
-        
-        // 根据剩余距离调整速度（减速控制）
-        float remaining_distance = target_distance - avg_distance_moved;
-        float current_speed = base_speed_rpm;
-        
-        if(remaining_distance < 200.0f) // 距离目标200mm时开始减速
-        {
-            current_speed = base_speed_rpm * (remaining_distance / 200.0f);
-            if(current_speed < 30.0f) current_speed = 30.0f; // 最小速度
-        }
-        
-        // 应用方向
-        current_speed *= direction;
-        
-        // 计算带航向修正的轮速
-        Motor_Yaw_Corrected_Forward(current_speed, wheel_speeds);
-        
-        // 发送速度指令
-        Motor_SetAllVelocities(wheel_speeds);
-        
-        HAL_Delay(50); // 50ms控制周期
-    }
+	(void)target_yaw_deg; // 忽略航向参数
+	Motor_Move_Forward(d_mm, 0U);
+	return true;
 }
 
 /**
- * @brief 带航向角稳定的左右平移运动 (速度模式+位置反馈)
- * @param d_mm 移动距离(mm), >0向左, <0向右
- * @param target_yaw_deg 目标航向角(度)
- * @return true: 运动完成, false: 出错或被打断
+ * @brief 兼容旧接口: 左右平移运动 (忽略航向参数)
+ * @param d_mm 移动距离(mm), 正值右移,负值左移
+ * @param target_yaw_deg 目标航向角(度), 此版本忽略
+ * @return 始终返回true
+ * @note 为保持与旧代码兼容,忽略航向保持功能
  */
 bool Move_Lateral_Distance_Stable(float d_mm, float target_yaw_deg)
 {
-    float start_positions[4], current_positions[4];
-    float target_distance = fabsf(d_mm);
-    float base_speed_rpm = 100.0f; // 侧向运动稍慢
-    float wheel_speeds[4];
-    int8_t direction = (d_mm >= 0) ? 1 : -1;
-    
-    // 1. 读取起始位置
-    if(!Motor_ReadAllPositions(start_positions))
-    {
-        return false;
-    }
-    
-    // 2. 设置目标航向角并启用航向保持
-    Motor_SetHeadingTarget(target_yaw_deg);
-    Motor_EnableHeadingHold(true);
-    
-    // 3. 主控制循环
-    while(1)
-    {
-        // 读取当前位置
-        if(!Motor_ReadAllPositions(current_positions))
-        {
-            Motor_StopAll();
-            Motor_EnableHeadingHold(false);
-            return false;
-        }
-        
-        // 计算侧向移动距离（基于轮子角度变化）
-        // 对于麦克纳姆轮，侧向移动时每个轮子的角度变化相同
-        float avg_deg_moved = 0;
-        for(int i = 0; i < 4; i++)
-        {
-            avg_deg_moved += fabsf(current_positions[i] - start_positions[i]);
-        }
-        avg_deg_moved /= 4.0f;
-        
-        float distance_moved = motor_deg_to_distance_mm(avg_deg_moved);
-        
-        // 检查是否到达目标
-        if(distance_moved >= target_distance)
-        {
-            Motor_StopAll();
-            Motor_EnableHeadingHold(false);
-            return true;
-        }
-        
-        // 根据剩余距离调整速度
-        float remaining_distance = target_distance - distance_moved;
-        float current_speed = base_speed_rpm;
-        
-        if(remaining_distance < 150.0f) // 距离目标150mm时开始减速
-        {
-            current_speed = base_speed_rpm * (remaining_distance / 150.0f);
-            if(current_speed < 25.0f) current_speed = 25.0f; // 最小速度
-        }
-        
-        // 应用方向
-        current_speed *= direction;
-        
-        // 计算带航向修正的轮速
-        Motor_Yaw_Corrected_Strafe(current_speed, wheel_speeds);
-        
-        // 发送速度指令
-        Motor_SetAllVelocities(wheel_speeds);
-        
-        HAL_Delay(50); // 50ms控制周期
-    }
+	(void)target_yaw_deg; // 忽略航向参数
+	Motor_Move_Lateral(d_mm, 0U);
+	return true;
 }
 
 /**
- * @brief 原地旋转90度
+ * @brief 兼容旧接口: 原地旋转90度
  * @param clockwise true: 顺时针旋转90°, false: 逆时针旋转90°
- * @return true: 旋转完成, false: 出错或被打断
+ * @return 始终返回true
+ * @note 旋转方向: clockwise=true表示顺时针(车体-yaw)
  */
 bool Move_Rotate_90_Degrees(bool clockwise)
 {
-    float current_yaw = 0.0f;
-    float roll, pitch;
-    float target_yaw;
-    float base_rotation_speed = 80.0f; // 旋转基础速度 (RPM)
-    float wheel_speeds[4];
-    uint32_t timeout_ms = 5000; // 5秒超时
-    uint32_t start_time = HAL_GetTick();
-    
-    // 1. 获取当前航向角
-    if (mpu_dmp_get_data(&pitch, &roll, &current_yaw) != 0)
-    {
-        return false; // IMU读取失败
-    }
-    
-    // 2. 计算目标航向角
-    if (clockwise)
-    {
-        target_yaw = current_yaw - 90.0f; // 顺时针减90度
-    }
-    else
-    {
-        target_yaw = current_yaw + 90.0f; // 逆时针加90度
-    }
-    
-    // 标准化目标角度到[-180, 180]范围
-    target_yaw = normalize_angle(target_yaw);
-    
-    // 3. 设置航向保持目标并启用
-    Motor_SetHeadingTarget(target_yaw);
-    Motor_EnableHeadingHold(true);
-    
-    // 4. 主旋转控制循环
-    while(1)
-    {
-        // 超时检查
-        if((HAL_GetTick() - start_time) > timeout_ms)
-        {
-            Motor_StopAll();
-            Motor_EnableHeadingHold(false);
-            return false; // 超时
-        }
-        
-        // 获取当前航向角
-        if (mpu_dmp_get_data(&pitch, &roll, &current_yaw) != 0)
-        {
-            Motor_StopAll();
-            Motor_EnableHeadingHold(false);
-            return false; // IMU读取失败
-        }
-        
-        // 更新航向控制器
-        Motor_UpdateHeadingController(current_yaw);
-        
-        // 计算角度误差
-        float angle_error = normalize_angle(target_yaw - current_yaw);
-        
-        // 检查是否到达目标 (允许±3度误差)
-        if(fabsf(angle_error) <= 3.0f)
-        {
-            Motor_StopAll();
-            Motor_EnableHeadingHold(false);
-            return true; // 旋转完成
-        }
-        
-        // 根据剩余角度调整旋转速度
-        float current_rotation_speed = base_rotation_speed;
-        
-        if(fabsf(angle_error) < 30.0f) // 剩余角度小于30度时开始减速
-        {
-            current_rotation_speed = base_rotation_speed * (fabsf(angle_error) / 30.0f);
-            if(current_rotation_speed < 20.0f) current_rotation_speed = 20.0f; // 最小旋转速度
-        }
-        
-        // 根据误差方向确定旋转方向
-        if(angle_error > 0) // 需要逆时针旋转
-        {
-            current_rotation_speed = current_rotation_speed;
-        }
-        else // 需要顺时针旋转
-        {
-            current_rotation_speed = -current_rotation_speed;
-        }
-        
-        // 设置麦克纳姆轮原地旋转轮速
-        // 原地顺时针旋转: FL+, FR-, RL+, RR-
-        // 原地逆时针旋转: FL-, FR+, RL-, RR+
-        wheel_speeds[0] =  current_rotation_speed; // FL
-        wheel_speeds[1] = -current_rotation_speed; // FR
-        wheel_speeds[2] =  current_rotation_speed; // RL
-        wheel_speeds[3] = -current_rotation_speed; // RR
-        
-        // 发送速度指令
-        Motor_SetAllVelocities(wheel_speeds);
-        
-        HAL_Delay(50); // 50ms控制周期
-    }
+	Motor_Move_Rotate(clockwise ? -90.0f : 90.0f, 0U);
+	return true;
 }
+
