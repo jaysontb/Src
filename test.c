@@ -9,26 +9,26 @@
 #define PLATE3     218.0f
 
 #define SONGKAI    45.0f
-#define ZHUA      10.0f
+#define ZHUA      9.0f
 
 void Test_1(void)
 {   
     // 启动定时器PWM
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
     
-    Servo_SetAngle1(PLATE3);
+    Servo_SetAngle1(0.0f);
 }
 void Test_2(void)
 {   
     // 启动定时器PWM
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
     
-    Servo_SetAngle2(140.0f);
+    Servo_SetAngle2(ZHUA);
 }
 void Test_3(void)
 {   
     // 启动定时器PWM
     HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
     
-    Servo_SetAngle3(90.0f);
+    Servo_SetAngle3(0.0f);
 }

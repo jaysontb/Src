@@ -38,6 +38,7 @@
 #include "visual_comm.h"    // 添加视觉通信头文件
 #include "visual_test.h"    // 添加视觉测试头文件
 #include "motor.h"          // 添加电机控制头文件
+#include "gripper.h"        // 添加机械爪控制头文件
 
 /* USER CODE END Includes */
 
@@ -70,6 +71,9 @@ void SystemClock_Config(void);
 void Motor_Test_Basic(void);           // 基础测试: 前后左右旋转
 void Motor_Test_Square(void);          // 正方形路径测试
 void Motor_Test_Competition_Route(void); // 比赛路径模拟测试
+
+// ==================== 机械爪测试函数声明 ====================
+void Gripper_Test_Simple(void);        // 简化版升降测试
 
 /* USER CODE END PFP */
 
@@ -119,7 +123,7 @@ int main(void)
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   
-  OLED_Init();  // 初始化OLED显示
+  //OLED_Init();  // 初始化OLED显示
   // ==================== 视觉通信初始化 ====================
   //Visual_Data_Init();          // 初始化视觉数据结构
   //Visual_UART_Start_Receive(); // 启动串口接收
@@ -147,24 +151,23 @@ int main(void)
   //   OLED_ShowString(1, 1, "MPU DMP ERROR");
   // }
 
-	// __HAL_UART_CLEAR_IDLEFLAG(&huart1); 											
-	// __HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE); 							
-  // HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN); 
+	__HAL_UART_CLEAR_IDLEFLAG(&huart1); 											
+	__HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE); 							
+  HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN); 
 
-  //Test_2();
-  
-  // ==================== 电机运动模块测试 ====================
-  // ⚠️  测试前必读:
-  // 1. 确保小车放在空旷场地,周围至少1米范围内无障碍物
-  // 2. 确保小车不会掉落桌面(场地足够大)
-  // 3. 准备好急停按钮或断电开关
-  // 4. 观察轮子转向是否符合预期
-  // 5. 测量实际移动距离,与设定值对比,调整WHEEL_RADIUS_MM等参数
-  
+
+  HAL_Delay(1000);
+
+  Emm_V5_Pos_Control(6, 0, 100, 100, 16000, 0, 0);
+
+
+  // Test_1();
+  // Test_2();
+  // Test_3();
+
   // 初始化电机模块
   // Motor_Init();
   
-  // ========== 选择一个测试运行(取消注释) ==========
   
   // 测试1: 基础运动测试 (推荐首次测试)
   // 功能: 前进、后退、左移、右移、旋转各执行一次
@@ -187,8 +190,8 @@ int main(void)
   // ========== 手动测试代码示例 ==========
   // 如果想自定义测试,可以直接调用以下函数:
   
-  //Motor_Move_Forward(100.0f, 0);   // 前进100mm,使用默认速度
-  //HAL_Delay(500);
+  // Motor_Move_Forward(100.0f, 0);   // 前进100mm,使用默认速度
+  // HAL_Delay(500);
   //Motor_Move_Lateral(200.0f, 40);   // 右移200mm,速度40RPM
   //HAL_Delay(500);
   // Motor_Move_Rotate(90.0f, 30);    // 逆时针旋转90度,速度30RPM
@@ -438,6 +441,29 @@ void Motor_Test_Competition_Route(void)
 	
 	OLED_ShowString(3, 1, "Route Done! ");
 	OLED_ShowString(4, 1, "Check Pos   ");
+}
+
+// ==================== 机械爪测试函数实现 ====================
+
+/**
+ * @brief 简化版机械爪升降测试
+ */
+void Gripper_Test_Simple(void)
+{
+	// 测试1: 升到10mm (离地19cm)
+	Gripper_Lift(10.0f);
+	HAL_Delay(1000);
+	
+	// 测试2: 升到最高22mm (离地20.2cm)
+	Gripper_Lift(22.0f);
+	HAL_Delay(1000);
+	
+	// 测试3: 降到5mm (离地18.5cm)
+	Gripper_Lift(5.0f);
+	HAL_Delay(1000);
+	
+	// 测试4: 回到0mm (离地18cm)
+	Gripper_Lift(0.0f);
 }
 
 /* USER CODE END 4 */

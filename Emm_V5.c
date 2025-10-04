@@ -172,7 +172,7 @@ void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bo
   */
 void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF)
 {
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0]  =  addr;                      // 地址
