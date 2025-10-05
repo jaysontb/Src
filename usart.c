@@ -26,6 +26,9 @@ __IO bool rxFrameFlag = false;
 __IO uint8_t rxCmd[CMD_LEN] = {0};
 __IO uint8_t rxCount = 0;
 
+// 电机到位标志 (UART空闲中断优化方案)
+volatile bool motor_arrived_flag = false;
+
 /* USER CODE END 0 */
 
 UART_HandleTypeDef huart1;

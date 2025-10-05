@@ -155,15 +155,11 @@ int main(void)
 	__HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE); 							
   HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN); 
 
+  HAL_Delay(500);  // 等待系统稳定
 
-  HAL_Delay(1000);
-
-  Emm_V5_Pos_Control(6, 0, 100, 100, 16000, 0, 0);
-
-
-  // Test_1();
-  // Test_2();
-  // Test_3();
+  //Test_1();
+  //Gripper_Test_Simple();
+  Test_Gripper_PickAndPlace();
 
   // 初始化电机模块
   // Motor_Init();
@@ -452,15 +448,12 @@ void Gripper_Test_Simple(void)
 {
 	// 测试1: 升到10mm (离地19cm)
 	Gripper_Lift(10.0f);
-	HAL_Delay(1000);
 	
 	// 测试2: 升到最高22mm (离地20.2cm)
 	Gripper_Lift(22.0f);
-	HAL_Delay(1000);
 	
 	// 测试3: 降到5mm (离地18.5cm)
 	Gripper_Lift(5.0f);
-	HAL_Delay(1000);
 	
 	// 测试4: 回到0mm (离地18cm)
 	Gripper_Lift(0.0f);

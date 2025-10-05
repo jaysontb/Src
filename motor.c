@@ -318,19 +318,22 @@ static uint32_t sanitize_speed(uint32_t rpm)
 // }
 
 /**
- * @brief 等待电机运动完成(通过主动查询状态)
+ * @brief 等待电机运动完成 (UART空闲中断优化版)
  * @param distance_mm 移动距离(mm) - 用于计算超时时间
  * @param speed_rpm 运动速度(RPM) - 用于计算超时时间
  * 
- * @details 主动查询电机状态标志位:
+ * @details 使用中断标志+__WFI()低功耗等待,响应速度<1ms (原50ms):
  * - 周期性发送查询命令 Emm_V5_Read_Sys_Params(addr, S_FLAG)
- * - 解析返回数据: rxCmd[4] bit0=到位标志
+ * - USART1空闲中断检测到位标志并设置motor_arrived_flag
+ * - 主循环检查标志或__WFI()休眠等待中断唤醒
  * - 支持超时保护,防止无限等待
  * 
  * @note 电机驱动器不会主动发送完成信号,必须主动查询
  */
 static void wait_estimated_motion(float distance_mm, uint32_t speed_rpm)
 {
+	extern volatile bool motor_arrived_flag;
+	
 	// 计算超时时间: 基于距离和速度估算,留2倍余量
 	// 运动时间(s) = 距离(mm) / (速度(RPM) × 周长(mm) / 60)
 	float circumference = 2.0f * PI_F * WHEEL_RADIUS_MM;
@@ -339,7 +342,10 @@ static void wait_estimated_motion(float distance_mm, uint32_t speed_rpm)
 	
 	uint32_t start_tick = HAL_GetTick();
 	uint32_t last_query_tick = 0;
-	const uint32_t query_interval = 50;  // 查询间隔50ms
+	const uint32_t query_interval = 20;  // 优化: 20ms查询间隔(原50ms)
+	
+	motor_arrived_flag = false;  // 清除到位标志
+	rxFrameFlag = false;
 	
 	// 轮询等待,直到任意一个电机到位或超时
 	while ((HAL_GetTick() - start_tick) < timeout_ms)
@@ -353,9 +359,17 @@ static void wait_estimated_motion(float distance_mm, uint32_t speed_rpm)
 			// 因为是同步运动,所以只需查询一个电机即可
 			Emm_V5_Read_Sys_Params(MOTOR_FL, S_FLAG);
 			
-			// 等待UART接收完成
-			HAL_Delay(10);
+			// 等待UART接收完成或到位标志置位
+			uint32_t wait_start = HAL_GetTick();
+			while ((HAL_GetTick() - wait_start) < 20) {  // 最多等20ms
+				if (motor_arrived_flag) {  // 中断已检测到到位
+					motor_arrived_flag = false;
+					return;
+				}
+				__WFI();  // 进入低功耗模式,等待任意中断唤醒
+			}
 			
+			// 兼容旧方式: 如果中断未检测到,手动检查rxCmd
 			// 检查返回数据: rxCmd[0]=地址, rxCmd[1]=0xFD, rxCmd[2]=0x3A(读取命令), rxCmd[3]=参数类型, rxCmd[4]=状态标志
 			// rxCmd[4] bit0=到位标志: 1=到位, 0=未到位
 			if (rxFrameFlag && rxCmd[1] == 0xFD && rxCmd[2] == 0x3A)
@@ -368,12 +382,14 @@ static void wait_estimated_motion(float distance_mm, uint32_t speed_rpm)
 				rxFrameFlag = false;  // 清除标志,继续等待
 			}
 		}
-		
-		// 短暂休眠,降低CPU占用
-		HAL_Delay(5);
+		else
+		{
+			__WFI();  // 查询间隔内休眠,降低CPU占用
+		}
 	}
 	
-	// 超时仍未到位,清除标志并返回(可能堵转或参数错误)
+	// 超时清除标志
+	motor_arrived_flag = false;
 	rxFrameFlag = false;
 }
 

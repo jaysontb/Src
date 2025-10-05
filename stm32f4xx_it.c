@@ -220,6 +220,13 @@ void USART1_IRQHandler(void)
 		 
 		rxFrameFlag = true; // 置位一帧命令接收完毕标志位
 		
+		// 【优化】检测电机到位标志 (rxCmd[0]=地址, rxCmd[1]=0xFD帧头, rxCmd[2]=0x3A读取命令响应, rxCmd[4] bit0=到位标志)
+		// 检查地址1-6的所有电机到位标志 (地址1-4:麦克纳姆轮, 地址6:升降电机)
+		if (rxCmd[1] == 0xFD && rxCmd[2] == 0x3A && (rxCmd[4] & 0x01)) {
+			extern volatile bool motor_arrived_flag;
+			motor_arrived_flag = true;  // 设置到位标志,唤醒wait函数
+		}
+		
 		HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN);
 	}
   
