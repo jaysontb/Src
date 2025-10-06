@@ -70,8 +70,8 @@ bool Task_Vision_Pickup(ColorTarget_t color)
     
     // 步骤4: 坐标转换为底盘移动距离 (像素→毫米)
     // TODO: 根据实际标定结果调整转换系数
-    float move_x_mm = (target_x - 320) * 0.5f;  // 假设640×480分辨率,中心为(320,240)
-    float move_y_mm = (240 - target_y) * 0.5f;  // Y轴向下为正,需要反转
+    float move_x_mm = (target_x - 426) * 0.5f;  // 假设640×480分辨率,中心为(426,238)
+    float move_y_mm = (238 - target_y) * 0.5f;  // Y轴向下为正,需要反转
     
     // 步骤5: 底盘移动到物料上方
     Motor_Move_Lateral(move_x_mm, 0);   // 左右对齐
@@ -79,7 +79,7 @@ bool Task_Vision_Pickup(ColorTarget_t color)
     
     // 步骤6: 执行抓取动作
     Gripper_Pan_Rotate(PAN_ANGLE_GRAB);  // 云台转到抓取位置
-    HAL_Delay(300);
+    HAL_Delay(1000);
     
     Gripper_Claw_Open();  // 张开爪子
     HAL_Delay(500);

@@ -375,3 +375,25 @@ void Visual_Clear_RxFlag(void)
 {
     visual_rx_complete_flag = 0;
 }
+
+//-------------------------------------------------------------------------------------------------------------------
+//  @brief      等待视觉响应(阻塞式)
+//  @return     uint8_t: 1-接收成功, 0-超时
+//  @param      timeout_ms: 超时时间(毫秒)
+//  @note       轮询visual_rx_complete_flag直到收到数据或超时
+//-------------------------------------------------------------------------------------------------------------------
+uint8_t Visual_Wait_Response(uint32_t timeout_ms)
+{
+    uint32_t start_tick = HAL_GetTick();
+    
+    while ((HAL_GetTick() - start_tick) < timeout_ms)
+    {
+        if (visual_rx_complete_flag)
+        {
+            return 1;  // 接收成功
+        }
+        HAL_Delay(1);
+    }
+    
+    return 0;  // 超时
+}

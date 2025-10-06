@@ -3,14 +3,16 @@
 #include "motor.h"
 #include "Emm_V5.h"
 #include "main.h"
+#include "inv_mpu.h"    // 用于航向保持功能
 #include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 /* ===================== 机械参数 ===================== */
 #define PI_F                    3.14159265f
 #define WHEEL_RADIUS_MM         48.0f      // 麦克纳姆轮半径 (mm)
-#define WHEEL_BASE_MM           300.0f     // 左右轮中心距 (mm)
+#define WHEEL_BASE_MM           260.0f     // 左右轮中心距 (mm)
 #define WHEEL_TRACK_MM          300.0f     // 前后轮中心距 (mm)
 
 /* ===================== 电机地址 ===================== */
@@ -45,6 +47,75 @@ typedef enum {
 static const uint16_t SPEED_PROFILES[3] = {30, 50, 80}; /**< 各档位对应的RPM值 */
 static SpeedProfile_t g_current_speed_profile = SPEED_NORMAL; /**< 当前速度档位 */
 
+/* ===================== 卡尔曼滤波器 ===================== */
+/**
+ * @brief 一维卡尔曼滤波器结构体(用于航向角平滑)
+ */
+typedef struct {
+	float x;          /**< 状态估计值(当前最优估计) */
+	float p;          /**< 估计误差协方差(不确定性) */
+	float q;          /**< 过程噪声协方差(系统模型不确定性,越大越信任测量值) */
+	float r;          /**< 测量噪声协方差(传感器噪声,越大越信任预测值) */
+	float k;          /**< 卡尔曼增益(自动计算) */
+	bool initialized; /**< 初始化标志 */
+} KalmanFilter1D_t;
+
+static KalmanFilter1D_t g_yaw_filter = {0};  /**< 全局航向角滤波器 */
+
+/**
+ * @brief 初始化卡尔曼滤波器
+ * @param kf 滤波器指针
+ * @param process_noise 过程噪声(Q): 0.01~0.1,值越大越信任测量
+ * @param measurement_noise 测量噪声(R): 0.1~1.0,值越大越平滑但响应慢
+ */
+static void Kalman_Init(KalmanFilter1D_t *kf, float process_noise, float measurement_noise)
+{
+	kf->q = process_noise;
+	kf->r = measurement_noise;
+	kf->p = 1.0f;  // 初始估计误差协方差
+	kf->x = 0.0f;
+	kf->initialized = false;
+}
+
+/**
+ * @brief 航向角专用卡尔曼滤波(处理角度环绕问题)
+ * @param kf 滤波器指针
+ * @param measurement_deg 新的测量值(度)
+ * @return 滤波后的航向角(度)
+ */
+static float Kalman_Update_Yaw(KalmanFilter1D_t *kf, float measurement_deg)
+{
+	if (!kf->initialized)
+	{
+		kf->x = measurement_deg;
+		kf->initialized = true;
+		return kf->x;
+	}
+	
+	// 处理角度环绕: 如果测量值与估计值相差>180°,说明跨越了±180°边界
+	float delta = measurement_deg - kf->x;
+	if (delta > 180.0f)
+	{
+		measurement_deg -= 360.0f;
+	}
+	else if (delta < -180.0f)
+	{
+		measurement_deg += 360.0f;
+	}
+	
+	// 正常卡尔曼更新
+	kf->p = kf->p + kf->q;
+	kf->k = kf->p / (kf->p + kf->r);
+	kf->x = kf->x + kf->k * (measurement_deg - kf->x);
+	kf->p = (1.0f - kf->k) * kf->p;
+	
+	// 归一化到[-180, 180]
+	while (kf->x > 180.0f) kf->x -= 360.0f;
+	while (kf->x < -180.0f) kf->x += 360.0f;
+	
+	return kf->x;
+}
+
 /* ===================== 静态工具函数 ===================== */
 /**
  * @brief 内部工具函数声明
@@ -58,6 +129,8 @@ static void     wait_estimated_motion(float distance_mm, uint32_t speed_rpm); /*
 // static bool     wait_motion_complete_with_feedback(uint32_t timeout_ms); /**< 位置反馈等待(未使用) */
 //static bool     check_motor_arrived(uint8_t addr);            /**< 检查单个电机到位 */
 
+static float normalize_angle_deg(float angle_deg);
+
 /* ===================== 对外接口 ===================== */
 
 /**
@@ -67,7 +140,12 @@ static void     wait_estimated_motion(float distance_mm, uint32_t speed_rpm); /*
 void Motor_Init(void)
 {
 	HAL_Delay(100);
-	// 如需: 在此加入驱动器细分设置/回零/使能等操作
+	
+	// 初始化航向角卡尔曼滤波器
+	// Q=0.05: 过程噪声,适中的信任度
+	// R=0.5: 测量噪声,适度平滑但保持响应性
+	Kalman_Init(&g_yaw_filter, 0.05f, 0.5f);
+	
 }
 
 /**
@@ -288,36 +366,6 @@ static uint32_t sanitize_speed(uint32_t rpm)
 }
 
 /**
- * @brief 下发位置控制命令到四个电机 (未使用,已注释)
- * @param dirs 四个电机的方向数组 [FL, FR, RL, RR]
- * @param pulses 四个电机的脉冲数数组 [FL, FR, RL, RR]
- * @param speed_rpm 运动速度(RPM)
- * @param accel 加速度
- * 
- * @details Emm_V5_Pos_Control函数参数说明:
- * - addr: 电机地址(1-4)
- * - dir: 方向(0=反转, 1=正转)
- * - vel: 速度(RPM)
- * - acc: 加速度
- * - clk: 位置参数(0.1°单位)
- * - raF: 相对/绝对标志(0=相对, 1=绝对)
- * - snF: 多机同步标志(0=立即执行, 1=等待同步命令)
- * 
- * @note 使用同步运动命令让四个电机同时启动
- */
-// static void issue_position_commands(const uint8_t dirs[4], const uint32_t pulses[4], uint32_t speed_rpm, uint8_t accel)
-// {
-// 	// snF=1U: 启用多机同步,电机收到命令后不立即执行,等待同步信号
-// 	Emm_V5_Pos_Control(MOTOR_FL, dirs[0], speed_rpm, accel, pulses[0], 0U, 1U);
-// 	Emm_V5_Pos_Control(MOTOR_FR, dirs[1], speed_rpm, accel, pulses[1], 0U, 1U);
-// 	Emm_V5_Pos_Control(MOTOR_RL, dirs[2], speed_rpm, accel, pulses[2], 0U, 1U);
-// 	Emm_V5_Pos_Control(MOTOR_RR, dirs[3], speed_rpm, accel, pulses[3], 0U, 1U);
-// 	
-// 	// 发送同步运动命令,让所有电机同时启动
-// 	Emm_V5_Synchronous_motion(0U);
-// }
-
-/**
  * @brief 等待电机运动完成 (UART空闲中断优化版)
  * @param distance_mm 移动距离(mm) - 用于计算超时时间
  * @param speed_rpm 运动速度(RPM) - 用于计算超时时间
@@ -338,7 +386,7 @@ static void wait_estimated_motion(float distance_mm, uint32_t speed_rpm)
 	// 运动时间(s) = 距离(mm) / (速度(RPM) × 周长(mm) / 60)
 	float circumference = 2.0f * PI_F * WHEEL_RADIUS_MM;
 	float estimated_time_s = fabsf(distance_mm) / (speed_rpm * circumference / 60.0f);
-	uint32_t timeout_ms = (uint32_t)(estimated_time_s * 2000.0f) + 1000U;  // 2倍余量 + 1秒保底
+	uint32_t timeout_ms = (uint32_t)(estimated_time_s * 2000.0f);  // 2倍余量 + 1秒保底
 	
 	uint32_t start_tick = HAL_GetTick();
 	uint32_t last_query_tick = 0;
@@ -393,71 +441,179 @@ static void wait_estimated_motion(float distance_mm, uint32_t speed_rpm)
 	rxFrameFlag = false;
 }
 
-/**
- * @brief 检查单个电机是否到位
- * @param addr 电机地址
- * @return true=到位, false=未到位或读取失败
- * @note 方案三: 返回false强制使用延时等待,不读取反馈
- */
-// static bool check_motor_arrived(uint8_t addr)
-// {
-// 	// 方案三: 直接返回false,强制wait函数使用几何计算的延时
-// 	// 优点: 简单可靠,不依赖UART协议解析
-// 	// 缺点: 无法检测堵转/失步,需要延时估算准确
-// 	(void)addr; // 避免未使用参数警告
-// 	return false; // 强制使用延时等待
-// }
-
-/**
- * @brief 等待所有电机到位 (未使用,已注释)
- * @param timeout_ms 超时时间(毫秒)
- * @return 始终返回false
- * @note 此函数已被 wait_estimated_motion 中的 UART 反馈等待替代
- */
-// static bool wait_motion_complete_with_feedback(uint32_t timeout_ms)
-// {
-// 	(void)timeout_ms; // 避免未使用参数警告
-// 	return false;
-// }
-
-/* ===================== 兼容封装 ===================== */
-/**
- * @brief 兼容旧接口: 前进/后退运动 (忽略航向参数)
- * @param d_mm 移动距离(mm), 正值前进,负值后退
- * @param target_yaw_deg 目标航向角(度), 此版本忽略
- * @return 始终返回true
- * @note 为保持与旧代码兼容,忽略航向保持功能
- */
-bool Move_Forward_Distance_Stable(float d_mm, float target_yaw_deg)
+//获取旋转角度
+float Motor_Get_Rotation_From_Yaw(float yaw_start_deg, float yaw_now_deg)
 {
-	(void)target_yaw_deg; // 忽略航向参数
-	Motor_Move_Forward(d_mm, 0U);
-	return true;
+	float delta = yaw_now_deg - yaw_start_deg;
+	delta = normalize_angle_deg(delta);
+	return -delta;
+}
+static float normalize_angle_deg(float angle_deg)
+{
+	while (angle_deg > 180.0f)
+	{
+		angle_deg -= 360.0f;
+	}
+	while (angle_deg < -180.0f)
+	{
+		angle_deg += 360.0f;
+	}
+	return angle_deg;
+}
+
+
+/**
+ * @brief 带航向保持的前进运动
+ * @details 分段执行移动,每100mm检查航向并自动修正偏差
+ * @param distance_mm 目标距离(mm)
+ * @param target_yaw_deg 目标航向角(度)
+ * @param tolerance_deg 允许偏差(度)
+ * @param speed_rpm 速度(RPM), 0=使用默认
+ */
+void Motor_Move_Forward_WithYawHold(float distance_mm, float target_yaw_deg,
+                                     float tolerance_deg, uint16_t speed_rpm)
+{
+	const float segment = 400.0f;  // 每100mm检查一次航向
+	float remaining = distance_mm;
+	float pitch, roll, current_yaw;
+	
+	// 外部声明OLED函数
+	extern void OLED_ShowString(uint8_t Line, uint8_t Column, const char *String);
+	char debug_str[20];
+	
+	// 分段移动循环
+	while (fabsf(remaining) > 1.0f)
+	{
+		// 1. 计算本次移动步长
+		float step = (fabsf(remaining) > segment) ? 
+		             (remaining > 0 ? segment : -segment) : remaining;
+		
+		// 2. 执行小段移动
+		Motor_Move_Forward(step, speed_rpm);
+		
+		// 3. 读取当前航向(带重试机制)
+		uint8_t read_result = 1;  // 默认失败
+		for (uint8_t retry = 0; retry < 5; retry++)  // 最多重试5次
+		{
+			read_result = mpu_dmp_get_data(&pitch, &roll, &current_yaw);
+			if (read_result == 0) break;  // 读取成功,退出重试
+			HAL_Delay(10);  // 等待FIFO填充新数据
+		}
+		
+		if (read_result == 0)
+		{
+			// 应用卡尔曼滤波平滑航向角
+			float filtered_yaw = Kalman_Update_Yaw(&g_yaw_filter, current_yaw);
+			
+			// 4. 计算航向偏差(归一化到±180°)
+			float yaw_error = 0.1f * (180 - normalize_angle_deg(filtered_yaw - target_yaw_deg));
+			
+			// 显示当前yaw(滤波后)和误差
+			snprintf(debug_str, sizeof(debug_str), "Y:%.1f E:%.1f", filtered_yaw, yaw_error);
+			OLED_ShowString(4, 1, debug_str);
+			
+			// 5. 如果超出容差,立即修正
+			if (fabsf(yaw_error) > tolerance_deg)
+			{
+				snprintf(debug_str, sizeof(debug_str), "Fix Err:%.1f", yaw_error);
+				OLED_ShowString(3, 1, debug_str);
+				
+				Motor_Move_Rotate(-yaw_error, speed_rpm);  // 反向修正偏航
+				HAL_Delay(100);
+			}
+			else
+			{
+				OLED_ShowString(3, 1, "YawOK          ");
+			}
+		}
+		else
+		{
+			// 读取失败,显示警告
+			OLED_ShowString(3, 1, "MPU Read Fail!");
+			OLED_ShowString(4, 1, "Check FIFO...  ");
+		}
+		
+		remaining -= step;
+	}
 }
 
 /**
- * @brief 兼容旧接口: 左右平移运动 (忽略航向参数)
- * @param d_mm 移动距离(mm), 正值右移,负值左移
- * @param target_yaw_deg 目标航向角(度), 此版本忽略
- * @return 始终返回true
- * @note 为保持与旧代码兼容,忽略航向保持功能
+ * @brief 带航向保持的平移运动
+ * @details 分段执行平移,每100mm检查航向并自动修正偏差
+ * @param distance_mm 目标距离(mm)
+ * @param target_yaw_deg 目标航向角(度)
+ * @param tolerance_deg 允许偏差(度)
+ * @param speed_rpm 速度(RPM), 0=使用默认
  */
-bool Move_Lateral_Distance_Stable(float d_mm, float target_yaw_deg)
+void Motor_Move_Lateral_WithYawHold(float distance_mm, float target_yaw_deg,
+                                     float tolerance_deg, uint16_t speed_rpm)
 {
-	(void)target_yaw_deg; // 忽略航向参数
-	Motor_Move_Lateral(d_mm, 0U);
-	return true;
-}
+	const float segment = 400.0f;  // 每400mm检查一次航向
+	float remaining = distance_mm;
+	float pitch, roll, current_yaw;
+	uint8_t correction_count = 0;  // 记录修正次数
+	uint8_t read_fail_count = 0;   // 记录读取失败次数
+	
+	// 外部声明OLED函数
+	extern void OLED_ShowString(uint8_t Line, uint8_t Column, const char *String);
+	char debug_str[20];
+	
+	// 分段移动循环
+	while (fabsf(remaining) > 1.0f)
+	{
+		// 1. 计算本次移动步长
+		float step = (fabsf(remaining) > segment) ? 
+		             (remaining > 0 ? segment : -segment) : remaining;
+		
+		// 2. 执行小段平移
+		Motor_Move_Lateral(step, speed_rpm);
+		
+		// 3. 读取当前航向(带重试机制)
+		uint8_t read_result = 1;  // 默认失败
+		for (uint8_t retry = 0; retry < 5; retry++)  // 最多重试5次
+		{
+			read_result = mpu_dmp_get_data(&pitch, &roll, &current_yaw);
+			if (read_result == 0) break;  // 读取成功,退出重试
+			HAL_Delay(10);  // 等待FIFO填充新数据
+		}
+		
+		if (read_result == 0)
+		{
+			// 应用卡尔曼滤波平滑航向角
+			float filtered_yaw = Kalman_Update_Yaw(&g_yaw_filter, current_yaw);
 
-/**
- * @brief 兼容旧接口: 原地旋转90度
- * @param clockwise true: 顺时针旋转90°, false: 逆时针旋转90°
- * @return 始终返回true
- * @note 旋转方向: clockwise=true表示顺时针(车体-yaw)
- */
-bool Move_Rotate_90_Degrees(bool clockwise)
-{
-	Motor_Move_Rotate(clockwise ? -90.0f : 90.0f, 0U);
-	return true;
-}
+			// 4. 计算航向偏差(归一化到±180°)
+			float yaw_error = 0.2f*(180 - normalize_angle_deg(filtered_yaw - target_yaw_deg));
 
+			// 显示当前yaw(滤波后)和误差
+			snprintf(debug_str, sizeof(debug_str), "Y:%.1f E:%.1f", filtered_yaw, yaw_error);
+			OLED_ShowString(4, 1, debug_str);
+			
+			// 5. 如果超出容差,立即修正
+			if (fabsf(yaw_error) > tolerance_deg)
+			{
+				correction_count++;
+				snprintf(debug_str, sizeof(debug_str), "Fix#%d Err:%.1f", correction_count, yaw_error);
+				OLED_ShowString(3, 1, debug_str);
+				
+				Motor_Move_Rotate(-yaw_error, speed_rpm);  // 反向修正偏航
+				HAL_Delay(100);  // 短暂延时让你看清修正
+			}
+			else
+			{
+				// 航向正常,清空第3行
+				OLED_ShowString(3, 1, "YawOK          ");
+			}
+		}
+		else
+		{
+			// 读取失败,显示警告
+			read_fail_count++;
+			snprintf(debug_str, sizeof(debug_str), "MPU Fail #%d", read_fail_count);
+			OLED_ShowString(3, 1, debug_str);
+			OLED_ShowString(4, 1, "FIFO Empty?    ");
+		}
+		
+		remaining -= step;
+	}
+}

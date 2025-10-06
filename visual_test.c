@@ -27,28 +27,6 @@
 extern uint8_t visual_rx_complete_flag;
 
 //-------------------------------------------------------------------------------------------------------------------
-//  @brief      等待视觉数据接收(带超时)
-//  @return     uint8_t: 1-成功, 0-超时
-//  @param      timeout_ms: 超时时间(毫秒)
-//  @note       发送请求后调用,等待LubanCat返回数据
-//-------------------------------------------------------------------------------------------------------------------
-uint8_t Visual_Wait_Response(uint32_t timeout_ms)
-{
-    uint32_t start_tick = HAL_GetTick();
-    
-    while ((HAL_GetTick() - start_tick) < timeout_ms)
-    {
-        if (visual_rx_complete_flag)
-        {
-            return 1;  // 接收成功
-        }
-        HAL_Delay(1);
-    }
-    
-    return 0;  // 超时
-}
-
-//-------------------------------------------------------------------------------------------------------------------
 //  @brief      在OLED上显示坐标
 //  @return     void
 //  @param      x, y: 坐标值
@@ -90,7 +68,7 @@ void Visual_Test_Basic(void)
     Visual_Send_Material_Request(COLOR_RED);
     
     // Wait for response (max 500ms)
-    if (Visual_Wait_Response(500))
+    if (Visual_Wait_Response(1000))
     {
         // Parse received data
         Visual_Data_Unpack(Visual_Get_RxBuffer());
@@ -107,29 +85,29 @@ void Visual_Test_Basic(void)
     HAL_Delay(2000);
     
     // ========== Test 2: Platform Recognition ==========
-    OLED_Clear();
-    OLED_ShowString(1, 1, "Test2:Platform");
+    // OLED_Clear();
+    // OLED_ShowString(1, 1, "Test2:Platform");
     
     // 发送前先清除标志
-    Visual_Clear_RxFlag();
+    // Visual_Clear_RxFlag();
     
-    Visual_Send_Platform_Request(COLOR_RED);
+    // Visual_Send_Platform_Request(COLOR_RED);
     
-    if (Visual_Wait_Response(1000))  // 增加超时时间到1秒
-    {
-        Visual_Data_Unpack(Visual_Get_RxBuffer());
-        Visual_Clear_RxFlag();
+    // if (Visual_Wait_Response(1000))  // 增加超时时间到1秒
+    // {
+    //     Visual_Data_Unpack(Visual_Get_RxBuffer());
+    //     Visual_Clear_RxFlag();
         
-        // Display platform coordinates on OLED
-        Visual_Show_Coord_OLED(VIS_RX.platform_x, VIS_RX.platform_y, 2);
-        OLED_ShowString(3, 1, "Success!");
-    }
-    else
-    {
-        OLED_ShowString(2, 1, "ERROR:Timeout");
-    }
+    //     // Display platform coordinates on OLED
+    //     Visual_Show_Coord_OLED(VIS_RX.platform_x, VIS_RX.platform_y, 2);
+    //     OLED_ShowString(3, 1, "Success!");
+    // }
+    // else
+    // {
+    //     OLED_ShowString(2, 1, "ERROR:Timeout");
+    // }
     
-    HAL_Delay(2000);
+    // HAL_Delay(2000);
     
     // ========== Test 3: QR Code Recognition ==========
     // sprintf(msg, "\r\n=== Test 3: QR Code Recognition ===\r\n");

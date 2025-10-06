@@ -72,9 +72,6 @@ void Motor_Test_Basic(void);           // 基础测试: 前后左右旋转
 void Motor_Test_Square(void);          // 正方形路径测试
 void Motor_Test_Competition_Route(void); // 比赛路径模拟测试
 
-// ==================== 机械爪测试函数声明 ====================
-void Gripper_Test_Simple(void);        // 简化版升降测试
-
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -92,7 +89,10 @@ int main(void)
   /* USER CODE BEGIN 1 */
   // float pitch = 0.0f;
   // float roll = 0.0f;
-  // float yaw = 0.0f;
+  // float current_yaw = 0.0f;
+  // float yaw_prev = 0.0f;
+  // float rotation_angle = 0.0f;
+  // char value_buffer[12] = {0};
   // uint8_t mpu_ready = 0U;
 
   /* USER CODE END 1 */
@@ -123,88 +123,41 @@ int main(void)
   MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   
-  //OLED_Init();  // 初始化OLED显示
-  // ==================== 视觉通信初始化 ====================
-  //Visual_Data_Init();          // 初始化视觉数据结构
-  //Visual_UART_Start_Receive(); // 启动串口接收
+  OLED_Init();  // 初始化OLED显示
+  Visual_Data_Init();          // 初始化视觉数据结构
+  Visual_UART_Start_Receive(); // 启动串口接收
+  // mpu_dmp_init();
+  // HAL_Delay(500);
+
+  // __HAL_UART_CLEAR_IDLEFLAG(&huart1);
+	// __HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE); 							
+  // HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN); 
+
+  // HAL_Delay(500);  // 等待系统稳定
+  // Gripper_Lift(HEIGHT_TRANSPORT);
   
-  // 延时等待LubanCat启动(可选)
-  //HAL_Delay(500);
+  // // 读取初始航向并显示
+  // mpu_dmp_get_data(&pitch, &roll, &current_yaw);
+  // char yaw_str[20];
+  // snprintf(yaw_str, sizeof(yaw_str), "Init Yaw:%.1f", current_yaw);
+  // OLED_ShowString(1, 1, "YawHold Test");
+  // OLED_ShowString(2, 1, yaw_str);
+  // HAL_Delay(500);  // 显示2秒让你看清楚
+  
+  // Motor_Move_Lateral(400.0f,0.0f);//驶出启停区
+  // Motor_Move_Forward(-70.0f,0.0f);//稍微后退
+  
+  // // 显示准备开始航向保持
+  // OLED_ShowString(3, 1, "Start Move...");
+  // Motor_Move_Lateral_WithYawHold(1040.0f,current_yaw,1.0f,0);//移到第一个物块前
+  
+  //Motor_Move_Lateral(1040.0f,0);//移到第一个物块前
   
   // ==================== 执行视觉测试 ====================
-  // 取消注释以下任意一行进行测试:
-  
-  //Visual_Test_Basic();      // 基础测试(单次测试物料/凸台/二维码)
-  // Visual_Test_FullTask();   // 完整任务流程测试
-  
-  // ==================== 原有测试代码 ====================
-  // mpu_ready = (mpu_dmp_init() == 0U);
-  // if (mpu_ready)
-  // {
-  //   OLED_ShowString(1, 1, "MPU DMP READY ");
-  //   OLED_ShowString(2, 1, "Pitch:");
-  //   OLED_ShowString(3, 1, "Roll :");
-  //   OLED_ShowString(4, 1, "Yaw  :");
-  // }
-  // else
-  // {
-  //   OLED_ShowString(1, 1, "MPU DMP ERROR");
-  // }
+  Visual_Test_Basic();
+  //Test_Vision_Positioning_Advanced(COLOR_RED);
 
-	__HAL_UART_CLEAR_IDLEFLAG(&huart1); 											
-	__HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE); 							
-  HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN); 
-
-  HAL_Delay(500);  // 等待系统稳定
-
-  //Test_1();
-  //Gripper_Test_Simple();
-  Test_Gripper_PickAndPlace();
-
-  // 初始化电机模块
-  // Motor_Init();
-  
-  
-  // 测试1: 基础运动测试 (推荐首次测试)
-  // 功能: 前进、后退、左移、右移、旋转各执行一次
-  // 用时: 约30秒
-  // 场地需求: 300×300mm
-  //Motor_Test_Basic();
-  
-  // 测试2: 正方形路径测试 (推荐第二次测试)
-  // 功能: 走一个200×200mm的正方形,检验定位精度
-  // 用时: 约1分钟
-  // 场地需求: 500×500mm
-  // Motor_Test_Square();
-  
-  // 测试3: 比赛路径模拟 (完整流程测试)
-  // 功能: 模拟启停区→物料台→测试区→返回的完整路径
-  // 用时: 约2分钟
-  // 场地需求: 1500×600mm
-  // Motor_Test_Competition_Route();
-  
-  // ========== 手动测试代码示例 ==========
-  // 如果想自定义测试,可以直接调用以下函数:
-  
-  // Motor_Move_Forward(100.0f, 0);   // 前进100mm,使用默认速度
-  // HAL_Delay(500);
-  //Motor_Move_Lateral(200.0f, 40);   // 右移200mm,速度40RPM
-  //HAL_Delay(500);
-  // Motor_Move_Rotate(90.0f, 30);    // 逆时针旋转90度,速度30RPM
-  // HAL_Delay(500);
-  
-  // ========== 速度档位测试 ==========
-  // Motor_Set_Speed_Profile(0);      // 精确模式 30RPM
-  // Motor_Move_Forward(100.0f, 0);
-  // HAL_Delay(1000);
-  
-  // Motor_Set_Speed_Profile(1);      // 正常模式 50RPM
-  // Motor_Move_Forward(100.0f, 0);
-  // HAL_Delay(1000);
-  
-  // Motor_Set_Speed_Profile(2);      // 快速模式 80RPM
-  // Motor_Move_Forward(100.0f, 0);
-  // HAL_Delay(1000);
+  //Gripper_Lift(HEIGHT_HOME);
 
   /* USER CODE END 2 */
 
@@ -216,44 +169,23 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     // ==================== 视觉数据接收处理 ====================
-    // if (visual_rx_complete_flag)  // 检测到视觉数据
-    // {
-    //     // 解析接收数据
-    //     Visual_Data_Unpack(Visual_Get_RxBuffer());
+    if (visual_rx_complete_flag)  // 检测到视觉数据
+    {
+        // 解析接收数据
+        Visual_Data_Unpack(Visual_Get_RxBuffer());
         
-    //     // 清除标志
-    //     Visual_Clear_RxFlag(); 
+        // 清除标志
+        Visual_Clear_RxFlag(); 
         
-    //     // TODO: 这里添加你的业务逻辑
-    //     // 例如: 根据接收到的坐标控制电机运动
-    // }
+        // TODO: 这里添加你的业务逻辑
+        // 例如: 根据接收到的坐标控制电机运动
+    }
     
     // ==================== 循环测试(可选) ====================
     // 取消注释以下行进行连续测试:
     //Visual_Test_Loop();
     
-    // ==================== MPU6050姿态显示(原有代码) ====================
-    // if (mpu_ready)
-    // {
-    //   if (mpu_dmp_get_data(&pitch, &roll, &yaw) == 0U)
-    //   {
-    //     char value_buffer[12];
-    //     OLED_ShowString(1, 1, "MPU DMP READY ");
-    //     (void)snprintf(value_buffer, sizeof(value_buffer), "%7.2f", pitch);
-    //     OLED_ShowString(2, 7, value_buffer);
-    //     (void)snprintf(value_buffer, sizeof(value_buffer), "%7.2f", roll);
-    //     OLED_ShowString(3, 7, value_buffer);
-    //     (void)snprintf(value_buffer, sizeof(value_buffer), "%7.2f", yaw);
-    //     OLED_ShowString(4, 7, value_buffer);
-    //   }
-    //   else
-    //   {
-    //     OLED_ShowString(1, 1, "MPU DATA FAIL ");
-    //   }
-    // }
-    // HAL_Delay(50); 
-  
-  
+    //HAL_Delay(50);
   
   }
   /* USER CODE END 3 */
@@ -439,25 +371,6 @@ void Motor_Test_Competition_Route(void)
 	OLED_ShowString(4, 1, "Check Pos   ");
 }
 
-// ==================== 机械爪测试函数实现 ====================
-
-/**
- * @brief 简化版机械爪升降测试
- */
-void Gripper_Test_Simple(void)
-{
-	// 测试1: 升到10mm (离地19cm)
-	Gripper_Lift(10.0f);
-	
-	// 测试2: 升到最高22mm (离地20.2cm)
-	Gripper_Lift(22.0f);
-	
-	// 测试3: 降到5mm (离地18.5cm)
-	Gripper_Lift(5.0f);
-	
-	// 测试4: 回到0mm (离地18cm)
-	Gripper_Lift(0.0f);
-}
 
 /* USER CODE END 4 */
 
