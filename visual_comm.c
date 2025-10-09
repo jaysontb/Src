@@ -11,6 +11,7 @@
   */
 
 #include "visual_comm.h"
+#include <string.h>
 
 /* 全局变量定义 */
 VisualRxData_t VIS_RX;
@@ -29,6 +30,7 @@ static RxState_t rx_state = RX_STATE_WAIT_HEADER;
 static uint8_t rx_buffer[10];        // 接收缓冲区(最长9字节)
 static uint8_t rx_index = 0;         // 当前接收索引
 static uint8_t rx_expected_len = 0;  // 期望数据长度
+static uint8_t rx_frame_len = 0;     // 最近一帧实际长度
 static uint8_t rx_byte;              // 单字节接收缓存
 uint8_t visual_rx_complete_flag = 0; // 接收完成标志(供main.c使用)
 
@@ -203,33 +205,30 @@ void Visual_Data_Unpack(uint8_t *lubancat_data)
             
         case TASK_QR_CODE:    // 二维码数据
         {
-            if (lubancat_data[8] != 0x77)    // 校验帧尾
+            if (lubancat_data[3] != 0x77)    // 校验帧尾 (新格式: [0x66, 0x09, mode, 0x77])
                 return;
             
-            // 和校验验证
-            uint8_t checksum = 0;
-            for(uint8_t i = 2; i < 8; i++)
-            {
-                checksum += lubancat_data[i];
-            }
+            uint8_t mode_code = lubancat_data[2];
             
-            if (checksum == 12)    // 校验通过
+            // 解析装配模式
+            if (mode_code == 0x01)
             {
-                for (uint8_t i = 0; i < 6; i++)
-                {
-                    VIS_RX.qr_data[i] = lubancat_data[i + 2];
-                    color_task[i] = lubancat_data[i + 2];
-                }
-                VIS_RX.qr_valid = 1;    // 设置数据有效标志
+                VIS_RX.qr_data[0] = 1;  // 同色装配
+                VIS_RX.qr_valid = 1;
+            }
+            else if (mode_code == 0x02)
+            {
+                VIS_RX.qr_data[0] = 2;  // 异色错配
+                VIS_RX.qr_valid = 1;
+            }
+            else if (mode_code == 0xFF)
+            {
+                VIS_RX.qr_data[0] = 0;  // 未检测到
+                VIS_RX.qr_valid = 0;
             }
             else
             {
-                // 校验失败，清零数据
-                for (uint8_t i = 0; i < 6; i++)
-                {
-                    VIS_RX.qr_data[i] = 0;
-                    color_task[i] = 0;
-                }
+                VIS_RX.qr_data[0] = 0;  // 未知模式
                 VIS_RX.qr_valid = 0;
             }
             break;
@@ -305,7 +304,7 @@ void Visual_UART_RxCallback(void)
                     break;
                     
                 case TASK_QR_CODE:            // 0x09: 二维码
-                    rx_expected_len = 6;      // 6个ASCII字符
+                    rx_expected_len = 1;      // mode(1): 0x01=同色, 0x02=异色, 0xFF=未检测到
                     break;
                     
                 case TASK_PLATFORM:           // 0x0A: 凸台
@@ -340,6 +339,7 @@ void Visual_UART_RxCallback(void)
             if (rx_byte == 0x77)  // 帧尾正确
             {
                 rx_buffer[rx_index] = 0x77;
+                rx_frame_len = rx_index + 1;
                 visual_rx_complete_flag = 1;  // 置位接收完成标志
             }
             
@@ -352,6 +352,37 @@ void Visual_UART_RxCallback(void)
     
     // 继续接收下一个字节
     HAL_UART_Receive_IT(&huart2, &rx_byte, 1);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+//  @brief      获取最近一次完整响应帧
+//  @return     uint8_t: 0-成功, 1-无可用数据/参数错误, 2-缓冲区不足
+//  @param      dest: 复制目标缓冲区指针
+//  @param      max_len: 目标缓冲区最大长度
+//  @note       成功读取后会自动清除接收完成标志
+//-------------------------------------------------------------------------------------------------------------------
+uint8_t Visual_GetLastResponse(uint8_t *dest, uint8_t max_len)
+{
+    if ((dest == NULL) || (max_len == 0))
+    {
+        return 1;
+    }
+
+    if (!visual_rx_complete_flag)
+    {
+        return 1;
+    }
+
+    if (rx_frame_len > max_len)
+    {
+        memcpy(dest, rx_buffer, max_len);
+        visual_rx_complete_flag = 0;
+        return 2;
+    }
+
+    memcpy(dest, rx_buffer, rx_frame_len);
+    visual_rx_complete_flag = 0;
+    return 0;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -374,6 +405,7 @@ uint8_t* Visual_Get_RxBuffer(void)
 void Visual_Clear_RxFlag(void)
 {
     visual_rx_complete_flag = 0;
+    rx_frame_len = 0;
 }
 
 //-------------------------------------------------------------------------------------------------------------------

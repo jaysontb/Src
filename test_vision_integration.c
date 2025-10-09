@@ -13,6 +13,7 @@
 #include "motor.h"
 #include "oled.h"
 #include <math.h>
+#include <stdio.h>
 
 /* ==================== 视觉集成测试函数 ==================== */
 
@@ -135,61 +136,125 @@ void Test_Vision_Positioning(void)
 }
 
 /**
- * @brief 测试7: 高精度迭代式视觉定位 (优化版)
- * @details 通过迭代逼近+多帧平均,精度提升4倍
- * @param color 目标颜色
+ * @brief 统一的视觉对位接口 (支持物块/凸台/凹槽)
+ * @param target_type 目标类型 (物块/凸台/凹槽)
+ * @param color 目标颜色 (红/绿/蓝)
  * @return true=成功定位, false=失败
+ * 
+ * @details 功能特性:
+ * - 多帧平均滤波: 减少噪声影响
+ * - 迭代逼近算法: 自动修正偏差
+ * - 自适应参数: 根据目标类型调整精度要求
+ * - 防过冲机制: 使用衰减系数避免震荡
+ * 
+ * @example
+ * // 对准物料台的红色物块
+ * Vision_Align_Target(TARGET_MATERIAL_BLOCK, COLOR_RED);
+ * 
+ * // 对准测试区的绿色凸台
+ * Vision_Align_Target(TARGET_TEST_PLATFORM, COLOR_GREEN);
+ * 
+ * // 对准装配区的蓝色凹槽
+ * Vision_Align_Target(TARGET_ASSEMBLY_SLOT, COLOR_BLUE);
  */
-bool Test_Vision_Positioning_Advanced(ColorTarget_t color)
+bool Vision_Align_Target(TargetType_t target_type, ColorTarget_t color)
 {
-    // ========== 配置参数 ==========
-    const uint8_t MAX_ITERATIONS = 1;        // 最大迭代次数
-    const uint8_t SAMPLE_FRAMES = 2;         // 多帧采样数
-    const float PIXEL_THRESHOLD = 8.0f;      // 像素误差阈值(±8px ≈ 3mm)
-    const float MIN_MOVE_DIST = 7.0f;        // 最小移动距离(mm)
-    const float DAMPING_FACTOR = 0.85f;      // 衰减系数(防过冲)
+    // ========== 自适应参数配置 ==========
+    uint8_t max_iterations;
+    uint8_t sample_frames;
+    float pixel_threshold;
+    float min_move_dist;
+    float damping_factor;
     
-    // 使用你标定的参数
-    const float PIXEL_TO_MM_X = 0.17f;       // X轴像素转毫米系数
-    const float PIXEL_TO_MM_Y = 0.33f;       // Y轴像素转毫米系数
-    const uint16_t IMAGE_CENTER_X = 528;     // 图像中心X (你的标定值)
-    const uint16_t IMAGE_CENTER_Y = 223;     // 图像中心Y (你的标定值)
+    // 根据目标类型选择参数
+    switch (target_type) {
+        case TARGET_MATERIAL_BLOCK:
+            // 物块: 高精度要求,需精确抓取
+            max_iterations = 2;
+            sample_frames = 3;
+            pixel_threshold = 6.0f;      // ±6px ≈ 2mm
+            min_move_dist = 2.0f;
+            damping_factor = 0.10f;
+            break;
+            
+        case TARGET_TEST_PLATFORM:
+            // 凸台: 中等精度,放置区域较大
+            max_iterations = 2;
+            sample_frames = 2;
+            pixel_threshold = 10.0f;     // ±10px ≈ 4mm
+            min_move_dist = 2.0f;
+            damping_factor = 0.15f;
+            break;
+            
+        case TARGET_ASSEMBLY_SLOT:
+            // 凹槽: 最高精度,装配容差小
+            max_iterations = 2;
+            sample_frames = 4;
+            pixel_threshold = 5.0f;      // ±5px ≈ 1.5mm
+            min_move_dist = 1.5f;
+            damping_factor = 0.10f;
+            break;
+            
+        default:
+            return false;
+    }
     
-    OLED_Clear();
-    OLED_ShowString(1, 1, "Advanced Pos");
-    
+    // 标定参数 (所有目标类型共用同一相机)
+    const float PIXEL_TO_MM_X = 0.21f;       // X轴像素转毫米系数
+    const float PIXEL_TO_MM_Y = 0.22f;       // Y轴像素转毫米系数
+    const uint16_t IMAGE_CENTER_X = 498;     // 图像中心X
+    const uint16_t IMAGE_CENTER_Y = 223;     // 图像中心Y
     uint32_t total_start = HAL_GetTick();
     
     // ========== 迭代逼近循环 ==========
-    for (uint8_t iter = 0; iter < MAX_ITERATIONS; iter++) {
-        // 显示当前迭代次数 "Iter:X/3"
-        OLED_ShowString(2, 1, "Iter:");
-        OLED_ShowNum(2, 6, iter+1, 1);
-        OLED_ShowString(2, 7, "/");
-        OLED_ShowNum(2, 8, MAX_ITERATIONS, 1);
-        
+    for (uint8_t iter = 0; iter < max_iterations; iter++) {
         // ========== 步骤1: 多帧采样平均 ==========
         uint32_t sum_x = 0, sum_y = 0;
         uint8_t valid_samples = 0;
         
-        for (uint8_t sample = 0; sample < SAMPLE_FRAMES; sample++) {
-            Visual_Send_Material_Request(color);
+        for (uint8_t sample = 0; sample < sample_frames; sample++) {
+            // 根据目标类型发送不同的识别请求
+            switch (target_type) {
+                case TARGET_MATERIAL_BLOCK:
+                    Visual_Send_Material_Request(color);
+                    break;
+                case TARGET_TEST_PLATFORM:
+                    Visual_Send_Platform_Request(color);
+                    break;
+                case TARGET_ASSEMBLY_SLOT:
+                    Visual_Send_Slot_Request(color);
+                    break;
+            }
             
-            if (Visual_Wait_Response(200)) {
+            if (Visual_Wait_Response(1000)) {
                 Visual_Data_Unpack(Visual_Get_RxBuffer());
                 Visual_Clear_RxFlag();
                 
-                // 根据颜色选择坐标
-                uint16_t x, y;
-                if (color == COLOR_RED) {
-                    x = VIS_RX.r_block_x;
-                    y = VIS_RX.r_block_y;
-                } else if (color == COLOR_GREEN) {
-                    x = VIS_RX.g_block_x;
-                    y = VIS_RX.g_block_y;
-                } else {
-                    x = VIS_RX.b_block_x;
-                    y = VIS_RX.b_block_y;
+                // 根据目标类型和颜色选择坐标
+                uint16_t x = 0, y = 0;
+                
+                if (target_type == TARGET_MATERIAL_BLOCK) {
+                    // 物块坐标
+                    if (color == COLOR_RED) {
+                        x = VIS_RX.r_block_x;
+                        y = VIS_RX.r_block_y;
+                    } else if (color == COLOR_GREEN) {
+                        x = VIS_RX.g_block_x;
+                        y = VIS_RX.g_block_y;
+                    } else {
+                        x = VIS_RX.b_block_x;
+                        y = VIS_RX.b_block_y;
+                    }
+                } 
+                else if (target_type == TARGET_TEST_PLATFORM) {
+                    // 凸台坐标 (假设视觉模块返回特定颜色凸台位置)
+                    x = VIS_RX.platform_x;
+                    y = VIS_RX.platform_y;
+                }
+                else if (target_type == TARGET_ASSEMBLY_SLOT) {
+                    // 凹槽坐标
+                    x = VIS_RX.slot_x;
+                    y = VIS_RX.slot_y;
                 }
                 
                 // 过滤无效数据
@@ -203,62 +268,76 @@ bool Test_Vision_Positioning_Advanced(ColorTarget_t color)
         }
         
         if (valid_samples == 0) {
-            OLED_ShowString(3, 1, "No Data");
-            return false;
+            // 未获取到有效数据,重试
+            OLED_ShowString(1, 1, "Vision: No Data");
+            HAL_Delay(500);
+            continue;
         }
         
         // 计算平均坐标
         uint16_t avg_x = sum_x / valid_samples;
         uint16_t avg_y = sum_y / valid_samples;
         
-        int16_t error_x =-(avg_x - IMAGE_CENTER_X);  // 正值=目标在右,需右移; 负值=目标在左,需左移
-        int16_t error_y = IMAGE_CENTER_Y - avg_y;  // 正值=目标在前,需前移
-        
-        // 显示当前误差 "E:XXX,YYY"
-        OLED_ShowString(3, 1, "E:");
-        OLED_ShowSignedNum(3, 3, error_x, 3);
-        OLED_ShowString(3, 6, ",");
-        OLED_ShowSignedNum(3, 7, error_y, 3);
+        // 计算误差 (图像坐标系 -> 机器人坐标系)
+        int16_t error_x = -(avg_x - IMAGE_CENTER_X);  // 正值=目标在右,需右移
+        int16_t error_y = IMAGE_CENTER_Y - avg_y;     // 正值=目标在前,需前移
         
         // ========== 步骤3: 判断是否达到精度要求 ==========
         float abs_error_x = fabsf((float)error_x);
         float abs_error_y = fabsf((float)error_y);
         
-        if (abs_error_x < PIXEL_THRESHOLD && abs_error_y < PIXEL_THRESHOLD) {
+        if (abs_error_x < pixel_threshold && abs_error_y < pixel_threshold) {
             // 成功到位!
             uint32_t elapsed = HAL_GetTick() - total_start;
-            OLED_ShowString(4, 1, "OK! T:");
-            OLED_ShowNum(4, 7, elapsed, 4);
-            OLED_ShowString(4, 11, "ms");
-            HAL_Delay(2000);
+            
+            // 根据目标类型显示不同提示
+            char msg[16];
+            switch (target_type) {
+                case TARGET_MATERIAL_BLOCK:
+                    snprintf(msg, sizeof(msg), "Block OK %lums", elapsed);
+                    break;
+                case TARGET_TEST_PLATFORM:
+                    snprintf(msg, sizeof(msg), "Plat OK %lums", elapsed);
+                    break;
+                case TARGET_ASSEMBLY_SLOT:
+                    snprintf(msg, sizeof(msg), "Slot OK %lums", elapsed);
+                    break;
+            }
+            OLED_ShowString(1, 1, msg);
+            HAL_Delay(300);
             return true;
         }
         
         // ========== 步骤4: 计算移动距离(带衰减) ==========
-        float damping = 1.0f - (iter * (1.0f - DAMPING_FACTOR) / MAX_ITERATIONS);
+        // 衰减系数随迭代次数递减,防止过冲
+        float damping = 1.0f - (iter * (1.0f - damping_factor) / max_iterations);
         float move_x_mm = error_x * PIXEL_TO_MM_X * damping;
         float move_y_mm = error_y * PIXEL_TO_MM_Y * damping;
         
         // 最小移动限制(避免无意义微调)
-        if (fabsf(move_x_mm) < MIN_MOVE_DIST && fabsf(move_y_mm) < MIN_MOVE_DIST) {
-            OLED_ShowString(4, 1, "Close");
-            HAL_Delay(1000);
-            return true;
+        if (fabsf(move_x_mm) < min_move_dist && fabsf(move_y_mm) < min_move_dist) {
+            HAL_Delay(500);
+            return true;  // 误差在可接受范围内
         }
         
         // ========== 步骤5: 执行小步移动 ==========
-        if (fabsf(move_x_mm) >= MIN_MOVE_DIST) {
-            Motor_Move_Lateral(move_x_mm, 0);
+        // 调试信息
+        char debug_msg[16];
+        snprintf(debug_msg, sizeof(debug_msg), "Adj:%.1f,%.1f", move_x_mm, move_y_mm);
+        OLED_ShowString(1, 1, debug_msg);
+        
+        if (fabsf(move_x_mm) >= min_move_dist) {
+            Motor_Move_Lateral(move_x_mm, 25);  // 使用低速精确移动
         }
-        if (fabsf(move_y_mm) >= MIN_MOVE_DIST) {
-            Motor_Move_Forward(move_y_mm, 0);
+        if (fabsf(move_y_mm) >= min_move_dist) {
+            Motor_Move_Forward(move_y_mm, 25);
         }
         
         HAL_Delay(200);  // 稳定间隔
     }
     
     // 超过最大迭代次数仍未达标
-    OLED_ShowString(4, 1, "MaxIter");
-    HAL_Delay(2000);
+    OLED_ShowString(1, 1, "Vision: Timeout");
+    HAL_Delay(1000);
     return false;
 }

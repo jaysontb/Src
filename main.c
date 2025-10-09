@@ -39,6 +39,7 @@
 #include "visual_test.h"    // 添加视觉测试头文件
 #include "motor.h"          // 添加电机控制头文件
 #include "gripper.h"        // 添加机械爪控制头文件
+#include "task.h"           // 添加任务流程模块
 
 /* USER CODE END Includes */
 
@@ -126,39 +127,36 @@ int main(void)
   OLED_Init();  // 初始化OLED显示
   Visual_Data_Init();          // 初始化视觉数据结构
   Visual_UART_Start_Receive(); // 启动串口接收
-  // mpu_dmp_init();
-  // HAL_Delay(500);
+  mpu_dmp_init();
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); // 启动云台PWM
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2); // 启动爪子PWM
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3); // 启动电机PWM
 
-  // __HAL_UART_CLEAR_IDLEFLAG(&huart1);
-	// __HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE); 							
-  // HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN); 
+  __HAL_UART_CLEAR_IDLEFLAG(&huart1);
+	__HAL_UART_ENABLE_IT(&huart1, UART_IT_IDLE); 							
+  HAL_UART_Receive_DMA(&huart1, (uint8_t *)rxCmd, CMD_LEN); 
+  Gripper_Lift(HEIGHT_TRANSPORT);
+  
+  // ==================== 执行比赛任务流程 ====================
+  // uint8_t assembly_mode = 0;
+  // TaskStatus_t status = Task_QRCode_Read(&assembly_mode);
 
-  // HAL_Delay(500);  // 等待系统稳定
-  // Gripper_Lift(HEIGHT_TRANSPORT);
+  // 阶段1: 物料台批量抓取(蓝→绿→红 -> 车载物料盘3/2/1号位)
+  Task_Material_Pickup();
   
-  // // 读取初始航向并显示
-  // mpu_dmp_get_data(&pitch, &roll, &current_yaw);
-  // char yaw_str[20];
-  // snprintf(yaw_str, sizeof(yaw_str), "Init Yaw:%.1f", current_yaw);
-  // OLED_ShowString(1, 1, "YawHold Test");
-  // OLED_ShowString(2, 1, yaw_str);
-  // HAL_Delay(500);  // 显示2秒让你看清楚
+  // 完成后转90°面向测试区
+  Motor_Rotate_90_DMP(0, 0);
   
-  // Motor_Move_Lateral(400.0f,0.0f);//驶出启停区
-  // Motor_Move_Forward(-70.0f,0.0f);//稍微后退
+  // 阶段2: 测试区放置(红→绿→蓝顺序放到测试凸台)
+  Task_Test_Zone_Place_All();
   
-  // // 显示准备开始航向保持
-  // OLED_ShowString(3, 1, "Start Move...");
-  // Motor_Move_Lateral_WithYawHold(1040.0f,current_yaw,1.0f,0);//移到第一个物块前
-  
-  //Motor_Move_Lateral(1040.0f,0);//移到第一个物块前
-  
-  // ==================== 执行视觉测试 ====================
-  Visual_Test_Basic();
-  //Test_Vision_Positioning_Advanced(COLOR_RED);
+  // 阶段3: 将测试通过的物料按蓝→绿→红顺序放回物料盘
+  Task_Return_To_Plate();
 
-  //Gripper_Lift(HEIGHT_HOME);
-
+  // TODO: 阶段4-6 后续开发
+  // - 从车载取料 -> 装配区第一层
+  // - 第二批物料处理 -> 第二层码垛
+  // - 障碍穿越与回归
   /* USER CODE END 2 */
 
   /* Infinite loop */

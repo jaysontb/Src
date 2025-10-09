@@ -1,5 +1,3 @@
-
-
 #include "motor.h"
 #include "Emm_V5.h"
 #include "main.h"
@@ -8,6 +6,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "oled.h"
 
 /* ===================== 机械参数 ===================== */
 #define PI_F                    3.14159265f
@@ -45,7 +44,7 @@ typedef enum {
 } SpeedProfile_t;
 
 static const uint16_t SPEED_PROFILES[3] = {30, 50, 80}; /**< 各档位对应的RPM值 */
-static SpeedProfile_t g_current_speed_profile = SPEED_NORMAL; /**< 当前速度档位 */
+static SpeedProfile_t g_current_speed_profile = SPEED_FAST; /**< 当前速度档位 */
 
 /* ===================== 卡尔曼滤波器 ===================== */
 /**
@@ -124,10 +123,7 @@ static float Kalman_Update_Yaw(KalmanFilter1D_t *kf, float measurement_deg)
 static uint32_t distance_to_cmd_ticks(float distance_mm);     /**< 距离转Emm_V5命令参数 */
 static uint32_t rotation_to_cmd_ticks(float angle_deg);       /**< 角度转Emm_V5命令参数 */
 static uint32_t sanitize_speed(uint32_t rpm);                 /**< 速度值合法性检查 */
-// static void     issue_position_commands(const uint8_t dirs[4], const uint32_t pulses[4], uint32_t speed_rpm, uint8_t accel); /**< 下发位置控制命令(未使用) */
 static void     wait_estimated_motion(float distance_mm, uint32_t speed_rpm); /**< UART反馈等待 */
-// static bool     wait_motion_complete_with_feedback(uint32_t timeout_ms); /**< 位置反馈等待(未使用) */
-//static bool     check_motor_arrived(uint8_t addr);            /**< 检查单个电机到位 */
 
 static float normalize_angle_deg(float angle_deg);
 
@@ -478,8 +474,6 @@ void Motor_Move_Forward_WithYawHold(float distance_mm, float target_yaw_deg,
 	float pitch, roll, current_yaw;
 	
 	// 外部声明OLED函数
-	extern void OLED_ShowString(uint8_t Line, uint8_t Column, const char *String);
-	char debug_str[20];
 	
 	// 分段移动循环
 	while (fabsf(remaining) > 1.0f)
@@ -506,31 +500,15 @@ void Motor_Move_Forward_WithYawHold(float distance_mm, float target_yaw_deg,
 			float filtered_yaw = Kalman_Update_Yaw(&g_yaw_filter, current_yaw);
 			
 			// 4. 计算航向偏差(归一化到±180°)
-			float yaw_error = 0.1f * (180 - normalize_angle_deg(filtered_yaw - target_yaw_deg));
-			
-			// 显示当前yaw(滤波后)和误差
-			snprintf(debug_str, sizeof(debug_str), "Y:%.1f E:%.1f", filtered_yaw, yaw_error);
-			OLED_ShowString(4, 1, debug_str);
+			float yaw_error = 0.013f * (180 - normalize_angle_deg(filtered_yaw - target_yaw_deg));
 			
 			// 5. 如果超出容差,立即修正
 			if (fabsf(yaw_error) > tolerance_deg)
 			{
-				snprintf(debug_str, sizeof(debug_str), "Fix Err:%.1f", yaw_error);
-				OLED_ShowString(3, 1, debug_str);
-				
 				Motor_Move_Rotate(-yaw_error, speed_rpm);  // 反向修正偏航
 				HAL_Delay(100);
 			}
-			else
-			{
-				OLED_ShowString(3, 1, "YawOK          ");
-			}
-		}
-		else
-		{
-			// 读取失败,显示警告
-			OLED_ShowString(3, 1, "MPU Read Fail!");
-			OLED_ShowString(4, 1, "Check FIFO...  ");
+		
 		}
 		
 		remaining -= step;
@@ -546,17 +524,14 @@ void Motor_Move_Forward_WithYawHold(float distance_mm, float target_yaw_deg,
  * @param speed_rpm 速度(RPM), 0=使用默认
  */
 void Motor_Move_Lateral_WithYawHold(float distance_mm, float target_yaw_deg,
-                                     float tolerance_deg, uint16_t speed_rpm)
+                                     float tolerance_deg, uint16_t speed_rpm,float segment) 
 {
-	const float segment = 400.0f;  // 每400mm检查一次航向
+	 //float segment = 400.0f;  // 每400mm检查一次航向
 	float remaining = distance_mm;
 	float pitch, roll, current_yaw;
 	uint8_t correction_count = 0;  // 记录修正次数
 	uint8_t read_fail_count = 0;   // 记录读取失败次数
 	
-	// 外部声明OLED函数
-	extern void OLED_ShowString(uint8_t Line, uint8_t Column, const char *String);
-	char debug_str[20];
 	
 	// 分段移动循环
 	while (fabsf(remaining) > 1.0f)
@@ -581,39 +556,105 @@ void Motor_Move_Lateral_WithYawHold(float distance_mm, float target_yaw_deg,
 		{
 			// 应用卡尔曼滤波平滑航向角
 			float filtered_yaw = Kalman_Update_Yaw(&g_yaw_filter, current_yaw);
-
 			// 4. 计算航向偏差(归一化到±180°)
-			float yaw_error = 0.2f*(180 - normalize_angle_deg(filtered_yaw - target_yaw_deg));
+			float yaw_error = 0.013f*(180 - normalize_angle_deg(filtered_yaw - target_yaw_deg)+1.5f);
 
-			// 显示当前yaw(滤波后)和误差
-			snprintf(debug_str, sizeof(debug_str), "Y:%.1f E:%.1f", filtered_yaw, yaw_error);
-			OLED_ShowString(4, 1, debug_str);
+
 			
 			// 5. 如果超出容差,立即修正
 			if (fabsf(yaw_error) > tolerance_deg)
 			{
 				correction_count++;
-				snprintf(debug_str, sizeof(debug_str), "Fix#%d Err:%.1f", correction_count, yaw_error);
-				OLED_ShowString(3, 1, debug_str);
 				
 				Motor_Move_Rotate(-yaw_error, speed_rpm);  // 反向修正偏航
 				HAL_Delay(100);  // 短暂延时让你看清修正
-			}
-			else
-			{
-				// 航向正常,清空第3行
-				OLED_ShowString(3, 1, "YawOK          ");
 			}
 		}
 		else
 		{
 			// 读取失败,显示警告
 			read_fail_count++;
-			snprintf(debug_str, sizeof(debug_str), "MPU Fail #%d", read_fail_count);
-			OLED_ShowString(3, 1, debug_str);
-			OLED_ShowString(4, 1, "FIFO Empty?    ");
 		}
 		
 		remaining -= step;
 	}
+}
+
+/**
+ * @brief 基于DMP反馈的精确90°旋转(一次旋转+修正)
+ * @param clockwise 1=顺时针, 0=逆时针
+ * @param speed_rpm 速度(RPM), 0=使用默认
+ * @return 0=成功, 1=MPU读取失败
+ */
+uint8_t Motor_Rotate_90_DMP(uint8_t clockwise, uint16_t speed_rpm)
+{
+	float pitch, roll, yaw_start, yaw_end;
+	uint32_t speed = sanitize_speed((speed_rpm == 0) ? SPEED_PROFILES[g_current_speed_profile] : speed_rpm);
+	
+	// 1. 读取旋转前的航向角(带重试)
+	for (uint8_t i = 0; i < 3; i++)
+	{
+		if (mpu_dmp_get_data(&pitch, &roll, &yaw_start) == 0) break;
+		HAL_Delay(10);
+	}
+	
+	// 2. 执行90°旋转
+	Motor_Move_Rotate(clockwise ? -89.2f : 89.2f, speed);
+	
+	// 3. 等待稳定后读取旋转后的航向角
+	for (uint8_t i = 0; i < 3; i++)
+	{
+		if (mpu_dmp_get_data(&pitch, &roll, &yaw_end) == 0) break;
+		HAL_Delay(10);
+	}
+	// 4. 计算实际变化量
+	float actual_change = normalize_angle_deg(yaw_end - yaw_start);
+	// 5. 计算期望变化量(顺时针为负,逆时针为正)
+	float expected_change = clockwise ? -90.0f : 90.0f;
+	
+	// 6. 计算误差并进行一次性修正
+	float error = normalize_angle_deg(expected_change - actual_change);
+	if (fabsf(error) > 1.0f)  // 误差超过1°才修正
+	{
+		Motor_Move_Rotate(error, speed);
+		HAL_Delay(100);  // 等待修正完成
+	}
+	
+	return 0;  // 成功
+}
+
+/**
+ * @brief 原地航向矫正(修正到目标航向)
+ * @param target_yaw_deg 目标航向角(度)
+ * @param tolerance_deg 允许偏差(度)
+ * @param speed_rpm 速度(RPM), 0=使用默认
+ * @return 0=成功, 1=MPU读取失败
+ */
+uint8_t Motor_Correct_Yaw(float target_yaw_deg, float tolerance_deg, uint16_t speed_rpm)
+{
+	float pitch, roll, current_yaw;
+	uint32_t speed = sanitize_speed((speed_rpm == 0) ? SPEED_PROFILES[g_current_speed_profile] : speed_rpm);
+	
+	// 1. 读取当前航向角(带重试)
+	for (uint8_t i = 0; i < 5; i++)
+	{
+		if (mpu_dmp_get_data(&pitch, &roll, &current_yaw) == 0) break;
+		HAL_Delay(10);
+		if (i == 4) return 1;  // 5次重试后仍失败
+	}
+	
+	// 2. 计算航向偏差
+	float error = 0.14f * normalize_angle_deg(target_yaw_deg - current_yaw);
+	
+	// 3. 如果偏差在容差范围内,无需矫正
+	if (fabsf(error) <= tolerance_deg)
+	{
+		return 0;  // 无需矫正
+	}
+	
+	// 4. 原地旋转修正航向
+	Motor_Move_Rotate(error, speed);
+	HAL_Delay(100);  // 等待稳定
+	
+	return 0;  // 矫正成功
 }

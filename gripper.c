@@ -13,11 +13,15 @@
 #include "tim.h"    // 定时器PWM控制
 #include <math.h>
 #include <string.h>
+#include <motor.h>
 
 /* ==================== 私有变量 ==================== */
 
 // 当前机械爪高度
 static float current_height_mm = 0.0f;
+
+// 抓取次数计数器
+static uint8_t pickup_counter = 0;
 
 /* ==================== 私有函数声明 ==================== */
 
@@ -62,6 +66,24 @@ void Gripper_Lift(float height_mm)
 float Gripper_Get_Height(void)
 {
     return current_height_mm;
+}
+
+/**
+ * @brief 重置抓取计数器
+ * @note 在新的抓取流程开始前调用,重置计数器为0
+ */
+void Gripper_Reset_PickupCounter(void)
+{
+    pickup_counter = 0;
+}
+
+/**
+ * @brief 获取当前抓取次数
+ * @return 当前已执行的抓取次数
+ */
+uint8_t Gripper_Get_PickupCounter(void)
+{
+    return pickup_counter;
 }
 
 /* ==================== 私有函数实现 ==================== */
@@ -127,13 +149,6 @@ void Gripper_Pan_Rotate(float angle_deg)
     if (angle_deg < GRIPPER_PAN_MIN_ANGLE) angle_deg = GRIPPER_PAN_MIN_ANGLE;
     if (angle_deg > GRIPPER_PAN_MAX_ANGLE) angle_deg = GRIPPER_PAN_MAX_ANGLE;
     
-    // 启动PWM输出(首次调用时需要)
-    static bool pwm_started = false;
-    if (!pwm_started) {
-        HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-        pwm_started = true;
-    }
-    
     // 设置云台角度
     Servo_SetAngle1(angle_deg);
 }
@@ -146,14 +161,6 @@ void Gripper_Pan_Rotate(float angle_deg)
  */
 void Gripper_Claw_Open(void)
 {
-    // 启动PWM输出(首次调用时需要)
-    static bool pwm_started = false;
-    if (!pwm_started) {
-        HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-        pwm_started = true;
-    }
-    
-    // 设置爪子张开
     Servo_SetAngle2(GRIPPER_CLAW_MAX_ANGLE);
 }
 
@@ -163,23 +170,21 @@ void Gripper_Claw_Open(void)
  */
 void Gripper_Claw_Close(void)
 {
-    // 启动PWM输出(首次调用时需要)
-    static bool pwm_started = false;
-    if (!pwm_started) {
-        HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-        pwm_started = true;
-    }
-    
     // 设置爪子闭合
     Servo_SetAngle2(GRIPPER_CLAW_MIN_ANGLE);
 }
 
-void Gripper_PickAndPlace(void)
+/**
+ * @brief 抓取并放置物块
+ */
+void Gripper_PickAndPlace(int plate_number)
 {
-    // === 第1步: 初始化位置 ===
-    Gripper_Pan_Rotate(PAN_ANGLE_GRAB);  // 确保云台在抓取位置(0°)
-    HAL_Delay(500);  // 等待舵机到位
+    // 增加调用次数计数
+    pickup_counter++;
     
+    // === 第1步: 确保0位 ===
+    Gripper_Pan_Rotate(0.0f);  // 旋转回抓取位置(0°)
+    HAL_Delay(500);  // 等待舵机到位
     Gripper_Claw_Open();  // 张开爪子
     HAL_Delay(1000);  // 等待舵机到位
     
@@ -189,21 +194,46 @@ void Gripper_PickAndPlace(void)
     Gripper_Claw_Close();  // 闭合爪子夹紧
     HAL_Delay(1000);  // 等待夹紧(稍长确保夹稳)
     
-    // === 第3步: 升高到物料盘高度 ===
-    Gripper_Lift(HEIGHT_TRANSPORT);  // 升到12mm(物料盘高度)
+    // === 第3步: 升高到最高点 ===
+    Gripper_Lift(HEIGHT_TRANSPORT);  //
+    HAL_Delay(500);
+    Motor_Move_Forward(-80.0f, 0); // 后退80mm，避免碰撞
     
-    // === 第4步: 旋转到物料盘3 ===
-    Gripper_Pan_Rotate(PAN_ANGLE_PLATE1);  // 旋转到232°
-    HAL_Delay(2000);  // 等待舵机到位
+    // === 第4步: 旋转到指定物料盘 ===
+    float target_angle;
+    switch (plate_number) {
+        case 1:
+            target_angle = PAN_ANGLE_PLATE1;
+            break;
+        case 2:
+            target_angle = PAN_ANGLE_PLATE2;
+            break;
+        case 3:
+            target_angle = PAN_ANGLE_PLATE3;
+            break;
+        default:
+            target_angle = PAN_ANGLE_PLATE2;  // 默认使用第2个盘
+            break;
+    }
+    Gripper_Pan_Rotate(180.0f);  // 再转到目标角度
+    HAL_Delay(1800);
+    Gripper_Pan_Rotate(target_angle);  // 再转到目标角度
+    HAL_Delay(700);  // 增加延时到2秒,确保270°舵机有足够时间到位
     
     // === 第5步: 释放物块 ===
+    Gripper_Lift(HEIGHT_ASSEMBLY_L2);
     Gripper_Claw_Open();  // 张开爪子
-    HAL_Delay(500);  // 等待舵机到位
+    HAL_Delay(1000);  // 等待舵机到位
     
-    // === 第6步: 复位 ===
-    
+    // === 第6步: 复位 (第3次调用时跳过回原位) ===
     Gripper_Pan_Rotate(PAN_ANGLE_GRAB);  // 旋转回抓取位置(0°)
-    HAL_Delay(500);  // 等待舵机到位
+    HAL_Delay(1000);  // 等待舵机到位
     
-    Gripper_Lift(HEIGHT_HOME);  // 降到初始高度(0mm)
+    Gripper_Lift(HEIGHT_TRANSPORT);  // 回到最高
+    
+    // 仅在前两次调用时执行回原位操作
+    if (pickup_counter < 3) {
+        Motor_Move_Forward(80.0f, 0); // 回到原位
+    }
+    // 第3次调用不执行回原位,直接结束
 }
